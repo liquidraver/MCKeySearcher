@@ -58,13 +58,13 @@ struct NumaBuffer {
     }
 };
 
-// AVX-512 optimized hex conversion (8 bytes at once)
+// AVX-512 optimized hex conversion (64 bytes at once)
 inline void to_hex_fast_avx512(const unsigned char* data, size_t len, std::string& out) {
     out.resize(len * 2);
     
-    // Process 8 bytes at a time with AVX-512
+    // Process 64 bytes at a time with AVX-512
     size_t i = 0;
-    for (; i + 8 <= len; i += 8) {
+    for (; i + 64 <= len; i += 64) {
         __m512i bytes = _mm512_loadu_si512(&data[i]);
         
         // Extract high nibbles (bits 4-7)
@@ -78,12 +78,17 @@ inline void to_hex_fast_avx512(const unsigned char* data, size_t len, std::strin
         __m512i high_hex = _mm512_add_epi8(high, _mm512_set1_epi8('0'));
         __m512i low_hex = _mm512_add_epi8(low, _mm512_set1_epi8('0'));
         
-        // Adjust for A-F range
-        __m512i high_mask = _mm512_cmpgt_epi8(high, _mm512_set1_epi8(9));
-        __m512i low_mask = _mm512_cmpgt_epi8(low, _mm512_set1_epi8(9));
+        // Adjust for A-F range using comparison and blend
+        __m512i nine = _mm512_set1_epi8(9);
+        __m512i high_gt_nine = _mm512_cmpgt_epi8(high, nine);
+        __m512i low_gt_nine = _mm512_cmpgt_epi8(low, nine);
         
-        high_hex = _mm512_mask_add_epi8(high_hex, high_mask, high_hex, _mm512_set1_epi8('A' - '0' - 10));
-        low_hex = _mm512_mask_add_epi8(low_hex, low_mask, low_hex, _mm512_set1_epi8('A' - '0' - 10));
+        // Add adjustment for A-F (A = 65, 0 = 48, so adjustment is 7)
+        __m512i high_adjust = _mm512_mask_blend_epi8(high_gt_nine, _mm512_set1_epi8(0), _mm512_set1_epi8(7));
+        __m512i low_adjust = _mm512_mask_blend_epi8(low_gt_nine, _mm512_set1_epi8(0), _mm512_set1_epi8(7));
+        
+        high_hex = _mm512_add_epi8(high_hex, high_adjust);
+        low_hex = _mm512_add_epi8(low_hex, low_adjust);
         
         // Interleave high and low nibbles
         __m512i result = _mm512_unpacklo_epi8(high_hex, low_hex);
@@ -114,7 +119,7 @@ inline void to_hex_fast_fallback(const unsigned char* data, size_t len, std::str
 
 // Choose optimal hex conversion method
 inline void to_hex_fast(const unsigned char* data, size_t len, std::string& out) {
-    if (len >= 8) {
+    if (len >= 64) {
         to_hex_fast_avx512(data, len, out);
     } else {
         to_hex_fast_fallback(data, len, out);
@@ -134,15 +139,27 @@ inline bool check_prefix_avx512(const unsigned char* data, const std::string& pr
     }
     
     // Compare using AVX-512 if possible
-    if (prefix_len >= 8) {
-        __m512i expected = _mm512_loadu_si512(expected_bytes.data());
-        __m512i actual = _mm512_loadu_si512(data);
-        __mmask64 mask = _mm512_cmpeq_epi8_mask(expected, actual);
+    if (prefix_len >= 64) {
+        // For very long prefixes, process 64 bytes at a time
+        size_t i = 0;
+        for (; i + 64 <= prefix_len; i += 64) {
+            __m512i expected = _mm512_loadu_si512(&expected_bytes[i]);
+            __m512i actual = _mm512_loadu_si512(&data[i]);
+            __mmask64 mask = _mm512_cmpeq_epi8_mask(expected, actual);
+            
+            // Check if all 64 bytes match
+            if (_cvtmask64_u64(mask) != 0xFFFFFFFFFFFFFFFFULL) {
+                return false;
+            }
+        }
         
-        // Check if all bytes match
-        return _cvtmask64_u64(mask) == ((1ULL << prefix_len) - 1);
+        // Handle remaining bytes
+        for (; i < prefix_len; ++i) {
+            if (data[i] != expected_bytes[i]) return false;
+        }
+        return true;
     } else {
-        // Fallback for short prefixes
+        // For shorter prefixes, use standard method
         for (size_t i = 0; i < prefix_len; ++i) {
             if (data[i] != expected_bytes[i]) return false;
         }
@@ -154,7 +171,7 @@ inline bool check_prefix_avx512(const unsigned char* data, const std::string& pr
 inline bool check_prefix(const unsigned char* data, const std::string& prefix) {
     size_t prefix_len = prefix.length() / 2;
     
-    if (prefix_len >= 8) {
+    if (prefix_len >= 64) {
         return check_prefix_avx512(data, prefix);
     } else {
         // Standard method for short prefixes
@@ -163,7 +180,7 @@ inline bool check_prefix(const unsigned char* data, const std::string& prefix) {
             unsigned char low = (prefix[2 * i + 1] >= 'A') ? (prefix[2 * i + 1] - 'A' + 10) : (prefix[2 * i + 1] - '0');
             unsigned char expected = (high << 4) | low;
             if (data[i] != expected) return false;
-        }
+            }
         return true;
     }
 }
@@ -257,9 +274,9 @@ void server_cpu_worker(const Config& config, int thread_id, int cpu_id) {
             local_attempts++;
             
             // Pre-fetch next elements
-            if (i + 8 < config.batch_size) {
-                __builtin_prefetch(&buffers.pubkeys[(i + 8) * 32], 0, 1);
-                __builtin_prefetch(&buffers.privkeys[(i + 8) * 64], 0, 1);
+            if (i + 64 < config.batch_size) {
+                __builtin_prefetch(&buffers.pubkeys[(i + 64) * 32], 0, 1);
+                __builtin_prefetch(&buffers.privkeys[(i + 64) * 64], 0, 1);
             }
             
             bool prefix_match = check_prefix(&buffers.pubkeys[i * 32], config.prefix);
