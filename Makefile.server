@@ -38,7 +38,7 @@ install-deps:
 	sudo apt update
 	sudo apt install -y build-essential g++ make
 	sudo apt install -y libsodium-dev libnuma-dev
-	sudo apt install -y hwloc hwloc-nox
+	sudo apt install -y hwloc
 
 # Performance build (maximum server optimization)
 perf: CXX_FLAGS += -DNDEBUG -march=native -mtune=native
