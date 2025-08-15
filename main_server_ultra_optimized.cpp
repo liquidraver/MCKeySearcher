@@ -23,7 +23,7 @@ struct Config {
     bool continuous = false;
     int cpu_threads = 0; // Will be set automatically
     bool numa_aware = true;
-    size_t batch_size = 65536; // Increased for better cache utilization
+    size_t batch_size = 16384; // Reduced for stability while maintaining performance
     bool ultra_optimized = true;
 };
 
@@ -36,9 +36,9 @@ std::mutex print_mutex;
 
 // Cache-line aligned memory allocation for maximum performance
 struct alignas(64) UltraBuffer {
-    unsigned char seeds[65536 * 32];      // 2MB aligned to 64-byte cache lines
-    unsigned char pubkeys[65536 * 32];    // 2MB aligned to 64-byte cache lines
-    unsigned char privkeys[65536 * 64];   // 4MB aligned to 64-byte cache lines
+    unsigned char seeds[16384 * 32];      // 512KB aligned to 64-byte cache lines
+    unsigned char pubkeys[16384 * 32];    // 512KB aligned to 64-byte cache lines
+    unsigned char privkeys[16384 * 64];   // 1MB aligned to 64-byte cache lines
     int numa_node;
     
     UltraBuffer(int node) : numa_node(node) {
@@ -241,14 +241,15 @@ int get_numa_node(int cpu_id) {
 
 // Ultra-optimized CPU worker thread for sustained 2M+ performance
 void ultra_cpu_worker(const Config& config, int thread_id, int cpu_id) {
-    // Set ultra-optimized thread affinity
-    set_ultra_thread_affinity(cpu_id);
-    
-    // Get NUMA node for this CPU
-    int numa_node = get_numa_node(cpu_id);
-    
-    // Allocate ultra-optimized buffers
-    UltraBuffer buffers(numa_node);
+    try {
+        // Set ultra-optimized thread affinity
+        set_ultra_thread_affinity(cpu_id);
+        
+        // Get NUMA node for this CPU
+        int numa_node = get_numa_node(cpu_id);
+        
+        // Allocate ultra-optimized buffers
+        UltraBuffer buffers(numa_node);
     
     std::string pub_hex, priv_hex;
     pub_hex.reserve(64);
@@ -319,6 +320,11 @@ void ultra_cpu_worker(const Config& config, int thread_id, int cpu_id) {
             local_attempts = 0;
         }
     }
+    } catch (const std::exception& e) {
+        std::cerr << "Worker " << thread_id << " error: " << e.what() << std::endl;
+    } catch (...) {
+        std::cerr << "Worker " << thread_id << " unknown error" << std::endl;
+    }
 }
 
 // Ultra-optimized performance test targeting 2M+ sustained performance
@@ -335,7 +341,7 @@ double measure_ultra_performance(const Config& config) {
     auto start = std::chrono::steady_clock::now();
     
     // Test with optimal thread count for sustained performance
-    int test_threads = std::min(config.cpu_threads, 36); // Focus on one socket first
+    int test_threads = std::min(config.cpu_threads, 18); // Focus on one L3 cache group first
     
     for (int i = 0; i < test_threads; ++i) {
         auto test_worker = [&, i]() {
@@ -531,8 +537,13 @@ int main(int argc, char* argv[]) {
     
     // Start ultra-optimized CPU workers
     for (int i = 0; i < config.cpu_threads; ++i) {
-        threads.emplace_back(ultra_cpu_worker, std::ref(config), i, i);
-        std::cout << "Started ULTRA worker " << i << " on core " << i << " (NUMA " << get_numa_node(i) << ")\n";
+        try {
+            threads.emplace_back(ultra_cpu_worker, std::ref(config), i, i);
+            std::cout << "Started ULTRA worker " << i << " on core " << i << " (NUMA " << get_numa_node(i) << ")\n";
+        } catch (const std::exception& e) {
+            std::cerr << "Failed to start worker " << i << ": " << e.what() << std::endl;
+            break;
+        }
     }
     
     // Monitor progress with performance tracking
