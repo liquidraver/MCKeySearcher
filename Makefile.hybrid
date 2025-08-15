@@ -1,0 +1,93 @@
+# Hybrid CPU+GPU Ed25519 Key Searcher Makefile
+# Combines CPU and GPU for maximum performance
+# Optimized for GTX 1080 (Compute Capability 6.1)
+
+# Compilers
+NVCC = nvcc
+CXX = g++
+
+# CUDA paths (adjust for your system)
+CUDA_PATH ?= /usr/local/cuda
+CUDA_INC = $(CUDA_PATH)/include
+CUDA_LIB = $(CUDA_PATH)/lib64
+
+# Compiler flags
+NVCC_FLAGS = -arch=sm_61 -O3 -Xcompiler -O3 -std=c++14 \
+             -use_fast_math -maxrregcount=32 \
+             -Xptxas -O3,-v
+
+CXX_FLAGS = -std=c++14 -O3 -march=native -mtune=native \
+            -fomit-frame-pointer -pthread -DNDEBUG \
+            -funroll-loops -fprefetch-loop-arrays
+
+# Libraries
+LIBS = -L$(CUDA_LIB) -lcudart -lcurand -lsodium -lpthread
+
+# Include paths
+INCLUDES = -I$(CUDA_INC)
+
+# Source files
+CUDA_SRC = ed25519_cuda.cu cuda_wrapper.cu
+CPP_SRC = main_hybrid.cpp
+OBJ_FILES = ed25519_cuda.o cuda_wrapper.o main_hybrid.o
+
+# Targets
+TARGET = mckeysearcher_hybrid
+
+# Default target
+all: $(TARGET)
+
+# Build the main executable
+$(TARGET): $(OBJ_FILES)
+	$(CXX) $(CXX_FLAGS) $(OBJ_FILES) $(LIBS) -o $(TARGET)
+
+# Compile CUDA sources
+ed25519_cuda.o: ed25519_cuda.cu
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) -c $< -o $@
+
+cuda_wrapper.o: cuda_wrapper.cu
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) -c $< -o $@
+
+# Compile C++ source
+main_hybrid.o: $(CPP_SRC)
+	$(CXX) $(CXX_FLAGS) $(INCLUDES) -c $< -o $@
+
+# Clean build files
+clean:
+	rm -f $(OBJ_FILES) $(TARGET) *.o
+
+# Install dependencies (Ubuntu/Debian)
+install-deps:
+	sudo apt update
+	sudo apt install -y build-essential g++ make
+	sudo apt install -y libsodium-dev
+	# CUDA toolkit should be installed separately
+
+# Check CUDA installation
+check-cuda:
+	@echo "Checking CUDA installation..."
+	@nvcc --version || echo "CUDA not found. Please install CUDA toolkit."
+	@nvidia-smi || echo "NVIDIA driver not found."
+
+# Performance build (maximum optimization)
+perf: NVCC_FLAGS += -DNDEBUG -Xcompiler -DNDEBUG
+perf: CXX_FLAGS += -DNDEBUG
+perf: $(TARGET)
+
+# Debug build
+debug: NVCC_FLAGS += -g -G -O0
+debug: CXX_FLAGS += -g -O0
+debug: $(TARGET)
+
+# Profile build
+profile: NVCC_FLAGS += -pg -G
+profile: CXX_FLAGS += -pg
+profile: $(TARGET)
+
+# Quick test build (minimal optimization for faster compilation)
+quick: NVCC_FLAGS = -arch=sm_61 -O1 -std=c++14
+quick: CXX_FLAGS = -std=c++14 -O1 -pthread
+quick: $(TARGET)
+
+.PHONY: all clean install-deps check-cuda perf debug profile quick
+

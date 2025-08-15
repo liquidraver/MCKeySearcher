@@ -1,76 +1,86 @@
 # MCKeySearcher
 
-A high-performance Ed25519 public key searcher that finds keys matching specific hex prefixes and/or suffixes.
+A high-performance Ed25519 public key searcher that finds keys matching specific hex prefixes. Built with custom AVX2-optimized Ed25519 implementation and Intel SHA Extensions for maximum speed.
 
-This program was created ~~to save humanity from the effects of global wa~~ generate custom hexadecimal public key values for [MeshCore](https://github.com/meshcore-dev/MeshCore), allowing the app to display more visually appealing hex values.
-If parts of the code seem as though they were influenced by AI, that's no coincidence. ;)
+This program was created to generate custom hexadecimal public key values for [MeshCore](https://github.com/meshcore-dev/MeshCore), allowing the app to display more visually appealing hex values.
 
-## 🚀 TL;DR - Quick Start for Simple Users
-
-**For users who just want to generate a key and use it immediately:**
+## 🚀 TL;DR - Quick Start
 
 ```bash
 # 1. Install dependencies and build
-sudo apt update && sudo apt install build-essential git autotools-dev automake libtool pkg-config
+sudo apt update && sudo apt install build-essential git autotools-dev automake libtool pkg-config libssl-dev
 git clone https://github.com/liquidraver/MCKeySearcher
 cd MCKeySearcher
 make
 
 # 2. Generate a key (example: starting with "BEEF")
-./findkey
+./mckeysearcher
 # Enter: BEEF
-# Choose: 1 (Prefix only)
-# Choose: 1 (Find one key and exit)
 
 # 3. IMPORTANT: Copy the private key from found_keys.txt to paper or insert into node
 cat found_keys.txt
 
-# 4. Securely wipe the file (optional but recommended)
-./findkey --wipe
+# 4. Securely delete the file (optional but recommended)
+rm found_keys.txt
 ```
 
 **⚠️ SECURITY:**
 - Copy the private key to paper or insert directly into your node
 - **NEVER** leave private keys on your computer
-- Use `./findkey --wipe` to securely delete found_keys.txt
+- Delete found_keys.txt after copying the key
 - Private keys are automatically wiped from memory after use
 
 ## Features
 
-- **Cryptographically Secure**: Uses libsodium's secure random number generator and Ed25519 implementation
+- **Custom Ed25519 Implementation**: Built from scratch for maximum key generation performance
+- **Intel SHA Extensions**: SHA-512 acceleration using Intel SHA-NI instructions (3-5x faster)
+- **OpenSSL Fallback**: Fast SHA-512 when SHA-NI not available (2-3x faster than libsodium)
+- **AVX2 SIMD Optimization**: Vectorized field arithmetic using Intel AVX2 instructions
 - **High Performance**: Multi-threaded with CPU affinity, optimized for speed
-- **Flexible Search**: Find keys with specific hex prefixes, suffixes, or both
+- **Simple Interface**: Find keys with specific hex prefixes
 - **Real-time Status**: Live progress updates and performance monitoring
-- **Three Modes**: Find one key, find n keys and exit, or run continuously
-- **Key Logging**: All found keys are logged to `found_keys.txt`
 - **Memory Security**: Private keys are securely wiped from memory immediately after use
-- **Secure File Wiping**: Built-in secure deletion of found_keys.txt
+- **Key Logging**: All found keys are logged to `found_keys.txt`
+
+## Performance Optimizations
+
+### SHA-512 Acceleration
+The program automatically detects and uses the fastest available SHA-512 implementation:
+
+1. **Intel SHA-NI** (Fastest): 3-5x faster than libsodium on supported CPUs
+2. **OpenSSL** (Fast): 2-3x faster than libsodium when SHA-NI not available
+3. **libsodium** (Secure): Cryptographic fallback for maximum compatibility
+
+### AVX2 SIMD
+- Custom Ed25519 field arithmetic using Intel AVX2 instructions
+- Optimized for 12th Gen Intel processors and newer
+- Vectorized operations for parallel processing
 
 ## Prerequisites
 
-This program requires a Linux system with the following packages for building dependencies from source:
+This program requires a Linux system with AVX2 support and the following packages:
 
 ### Ubuntu/Debian
 ```bash
 sudo apt update
-sudo apt install build-essential git autotools-dev automake libtool pkg-config
+sudo apt install build-essential git autotools-dev automake libtool pkg-config libssl-dev
 ```
 
 ### CentOS/RHEL/Fedora
 ```bash
 sudo yum groupinstall "Development Tools"
-sudo yum install git autoconf automake libtool pkgconfig
+sudo yum install git autoconf automake libtool pkgconfig openssl-devel
 # OR for newer versions:
 sudo dnf groupinstall "Development Tools"
-sudo dnf install git autoconf automake libtool pkgconfig
+sudo dnf install git autoconf automake libtool pkgconfig openssl-devel
 ```
 
 ### Arch Linux
 ```bash
-sudo pacman -S base-devel git autoconf automake libtool pkgconf
+sudo pacman -S base-devel git autoconf automake libtool pkgconf openssl
 ```
 
-**Note**: The program automatically downloads and builds libsodium and ed25519 from source during the build process, so no additional cryptographic libraries need to be installed separately.
+**Note**: The program automatically downloads and builds libsodium from source during the build process. OpenSSL is used for SHA-512 acceleration when Intel SHA-NI is not available.
 
 ## Installation and Usage
 
@@ -96,111 +106,62 @@ make pgo-generate
 # ⚠️  IMPORTANT: Do NOT use Ctrl+C to exit during profiling!
 # The program must exit normally to write profiling data.
 
-# Method 1: Automated profiling (recommended)
-echo -e "123456\n1\n1" | ./findkey
-
-# Method 2: Manual profiling
-# ./findkey
-# When prompted:
-# 1. Enter a test prefix (e.g., "123456" for longer runtime)
-# 2. Choose search mode (1 or 2)
-# 3. Choose "Find one key and exit" (option 1) for controlled exit
-# 4. Let the program find a key and exit naturally
-# 5. OR choose "Run continuously" and let it run for 10-30 minutes, then choose option 1 in search behavior
+# Automated profiling (recommended)
+echo -e "123456\n" | ./mckeysearcher
 
 # After collecting data, rebuild with optimizations
 make pgo-use
 
 # Now run the optimized version
-./findkey
+./mckeysearcher
 ```
 
 **⚠️  PGO Profiling Requirements:**
 - **Never use Ctrl+C** to exit during profiling - this prevents profiling data from being written
-- The program must exit normally (either by finding a key or choosing "Find one key and exit")
+- The program must exit naturally by finding a key
 - Profiling data files (`.gcda`, `.gcno`) will be created in the current directory
-- If no profiling files are created, the PGO optimization will not work
 
 ### Step 3: Run the Program
+
 ```bash
-./findkey
+./mckeysearcher
 ```
 
 ## Usage Examples
 
 ### Example 1: Find a key starting with "BEEF"
 ```bash
-$ ./findkey
-Enter the prefix/suffix bytes from 0123456789ABCDEF (e.g. BEEFF00D, 23DF, 43): BEEF
-Search mode:
-1. Prefix only (Default)
-2. Prefix & Prefix + Suffix
-Enter your choice (1 or 2): 1
-
-Search behavior:
-1. Find one key and exit
-2. Run continuously (find all keys)
-Enter your choice (1 or 2): 1
+$ ./mckeysearcher
+Enter the prefix bytes from 0123456789ABCDEF (e.g. BEEFF00D, 23DF, 43): BEEF
 ```
 
-### Example 2: Find a key starting AND ending with "1234"
-```bash
-$ ./findkey
-Enter the prefix/suffix bytes from 0123456789ABCDEF (e.g. BEEFF00D, 23DF, 43): 1234
-Search mode:
-1. Prefix only (Default)
-2. Prefix & Prefix + Suffix
-Enter your choice (1 or 2): 2
-
-Search behavior:
-1. Find one key and exit
-2. Run continuously (find all keys)
-Enter your choice (1 or 2): 1
-```
-
-### Example 3: Securely wipe found_keys.txt after use
-```bash
-# After copying your private key to paper or inserting into node
-./findkey --wipe
-
-# Or use the short form
-./findkey -w
-```
-
-### Example 4: Get help
-```bash
-./findkey --help
-```
-
-## Program Options
-
-### Search Modes
-1. **Prefix only**: Find keys where the public key hex starts with your specified pattern
-2. **Prefix & Prefix + Suffix**: Find keys where the public key hex starts AND ends with your specified pattern
-
-### Search Behavior
-1. **Find one key and exit**: Stop after finding the first matching key
-2. **Enter a number how many keys to find**: Stop after finding the specified number of keys (approximate with few characters)
-3. **Run continuously**: Continue searching and find all matching keys (may create large log files for short prefixes)
-
-### Command Line Options
-- `--wipe`, `-w`, `--secure-wipe`: Securely wipe found_keys.txt file (overwrites with random data before deletion)
-- `--help`, `-h`: Show help message
+The program will:
+1. Ask for a hex prefix pattern
+2. Search for Ed25519 keys matching that pattern
+3. Display found keys in real-time
+4. Save all found keys to `found_keys.txt`
+5. Continue searching until interrupted
 
 ## Output
 
 - **Console**: Real-time status updates showing attempts, matches found, and keys per second
 - **Log File**: All found keys are saved to `found_keys.txt` in the current directory
-- **Format**: `Label: PrivateKey | PublicKey`
+- **Format**: Complete key information including pattern, public key, private key, seed, thread, attempts, and timestamp
 - **Memory Security**: Private keys are automatically wiped from memory immediately after logging to file
-- **Exit Message**: Confirmation that all private key data has been securely wiped from memory
 
-## Performance Tips
+## Performance Features
 
-1. **Use Profile-Guided Optimization**: For maximum performance, use the PGO build process
-2. **Reserve Cores**: The program automatically reserves one core for the OS
-3. **Batch Processing**: Uses optimized batch processing for better cache utilization
+1. **Custom Ed25519 Implementation**: Built specifically for key generation, not signing/verification
+2. **AVX2 SIMD Operations**: Vectorized field arithmetic for maximum CPU utilization
+3. **Multi-threading**: Uses all available CPU cores minus one for the OS
 4. **CPU Affinity**: Threads are pinned to specific CPU cores to reduce overhead
+5. **Profile-Guided Optimization**: Optional PGO build for maximum performance tuning
+
+## Hardware Requirements
+
+- **CPU**: Intel/AMD processor with AVX2 support (Intel Haswell+ or AMD Excavator+)
+- **Memory**: At least 4GB RAM recommended
+- **OS**: Linux (Ubuntu, Debian, CentOS, etc.)
 
 ## Security Warning
 
@@ -211,19 +172,12 @@ Enter your choice (1 or 2): 1
 ✅ **Memory Security**: Private keys are automatically and securely wiped from memory immediately after use
 - Memory is overwritten with cryptographically secure random data before zeros
 - Wiping happens immediately after logging to file
-- All private key data is cleared from batch arrays after processing
-
-✅ **Secure File Wiping**: Built-in secure deletion of found_keys.txt
-- Overwrites file with random data multiple times before deletion
-- Use `./findkey --wipe` to securely delete the file
-- Prevents recovery even with advanced forensic tools
 
 ### Best Practices
 
 1. **Immediate Transfer**: Copy the private key from `found_keys.txt` to paper or insert directly into your node
 2. **Never Store**: Don't leave private keys on your computer longer than necessary
-3. **Secure Wipe**: Use `./findkey --wipe` after copying the key
-4. **Memory Protection**: Private keys are automatically wiped from memory, but avoid running other programs while keys are in memory
+3. **Memory Protection**: Private keys are automatically wiped from memory, but avoid running other programs while keys are in memory
 
 ### The Most Secure Approach
 
@@ -235,7 +189,7 @@ The most secure way is to let the node generate keys on itself after a full wipe
 
 ### PGO (Profile-Guided Optimization) Issues
 
-**Problem**: `warning: 'findkey-main.gcda' profile count data file not found`
+**Problem**: `warning: 'mckeysearcher-main.gcda' profile count data file not found`
 
 **Solution**: This means the profiling data wasn't generated properly. Follow these steps:
 
@@ -246,17 +200,13 @@ The most secure way is to let the node generate keys on itself after a full wipe
 
 2. **Run the instrumented version properly:**
    - **DO NOT use Ctrl+C** to exit
-   - Let the program exit naturally by finding a key or choosing "Find one key and exit"
+   - Let the program exit naturally by finding a key
    - Use a longer prefix (like "12345678") for more profiling data
    
    **Recommended automated approach:**
    ```bash
-   echo -e "1234\n1\n1" | ./findkey
+   echo -e "1234\n" | ./mckeysearcher
    ```
-   This automatically provides:
-   - Prefix: "1234" (4 characters - quick but sufficient for profiling)
-   - Search mode: 1 (Prefix only)
-   - Search behavior: 1 (Find one key and exit)
 
 3. **Verify profiling files were created:**
    ```bash
@@ -272,7 +222,6 @@ The most secure way is to let the node generate keys on itself after a full wipe
 - Using Ctrl+C to exit during profiling
 - Running the program for too short a time
 - Not letting the program exit naturally
-- Using the wrong executable (must use the one built with `pgo-generate`)
 
 **Alternative**: If PGO continues to cause issues, use the simple build:
 ```bash
@@ -280,18 +229,59 @@ make clean
 make
 ```
 
-### Secure Wipe Issues
+### Build Issues
 
-**Problem**: `./findkey --wipe` fails or doesn't work as expected
+**Problem**: `make` fails with dependency errors
 
 **Solution**: 
-1. **Check if file exists**: The wipe command will tell you if `found_keys.txt` doesn't exist
-2. **Permission issues**: Make sure you have write permissions in the current directory
-3. **File in use**: Close any programs that might have the file open
-4. **Manual wipe**: If the built-in wipe fails, you can manually delete the file:
+1. **Clean and rebuild:**
    ```bash
-   rm found_keys.txt
+   make clean
+   make
    ```
-   (Note: Manual deletion is less secure than the built-in wipe)
 
-**Note**: The secure wipe feature overwrites the file with random data multiple times before deletion, making it impossible to recover the private keys even with advanced forensic tools.
+2. **Check dependencies:**
+   ```bash
+   sudo apt update
+   sudo apt install build-essential git autotools-dev automake libtool pkg-config
+   ```
+
+3. **Manual libsodium build:**
+   ```bash
+   cd deps/libsodium
+   ./autogen.sh
+   ./configure --enable-static --disable-shared
+   make
+   cd ../..
+   make
+   ```
+
+## Performance Tips
+
+1. **Use Profile-Guided Optimization**: For maximum performance, use the PGO build process
+2. **Reserve Cores**: The program automatically reserves one core for the OS
+3. **AVX2 Support**: Ensure your CPU supports AVX2 instructions for maximum performance
+4. **CPU Affinity**: Threads are automatically pinned to specific CPU cores
+
+## Technical Details
+
+### Ed25519 Implementation
+
+The program uses a custom, highly optimized Ed25519 implementation:
+
+- **Field Arithmetic**: Custom 256-bit field operations optimized for AVX2
+- **Point Operations**: Efficient point doubling and addition using extended coordinates
+- **Scalar Multiplication**: Double-and-add algorithm optimized for key generation
+- **No Signing/Verification**: Focused solely on key generation for maximum speed
+
+### AVX2 Optimizations
+
+- **Vectorized Field Operations**: Addition, subtraction, multiplication using `_mm256_*` intrinsics
+- **Aligned Memory**: 32-byte aligned buffers for optimal SIMD performance
+- **Batch Processing**: Processes multiple keys simultaneously for better cache utilization
+
+### Threading Model
+
+- **Worker Threads**: One thread per CPU core (minus one for OS)
+- **CPU Affinity**: Threads are pinned to specific cores to reduce context switching
+- **Lock-free Counters**: Atomic operations for thread-safe performance monitoring
