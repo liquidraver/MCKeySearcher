@@ -18,11 +18,10 @@
 #include <pthread.h>
 #include <numa.h>
 #include <immintrin.h>
-#include <fcntl.h>
-#include <unistd.h>
+
 // hwloc.h not needed for our optimizations
 
-// Ultra-optimized configuration for Intel Xeon Gold 5220
+// Simplified configuration for Intel Xeon Gold 5220
 struct Config {
     std::string prefix;
     int search_mode = 1; // 1: prefix only, 2: prefix + suffix
@@ -30,8 +29,8 @@ struct Config {
     bool continuous = false;
     int cpu_threads = 0; // Will be set automatically
     bool numa_aware = true;
-    size_t batch_size = 8192; // Optimized for L1 cache size (32KB per core)
-    bool ultra_optimized = true;
+    size_t batch_size = 16384; // Back to the size that was working
+    bool ultra_optimized = false; // Simplified approach
 };
 
 // Global state
@@ -41,36 +40,16 @@ std::atomic<bool> stop_search(false);
 std::mutex file_mutex;
 std::mutex print_mutex;
 
-// Cache-line aligned memory allocation for maximum performance
-struct alignas(64) UltraBuffer {
-    unsigned char seeds[8192 * 32];       // 256KB aligned to 64-byte cache lines
-    unsigned char pubkeys[8192 * 32];     // 256KB aligned to 64-byte cache lines
-    unsigned char privkeys[8192 * 64];    // 512KB aligned to 64-byte cache lines
-    int numa_node;
+// Simple buffer structure
+struct SimpleBuffer {
+    std::vector<unsigned char> seeds;
+    std::vector<unsigned char> pubkeys;
+    std::vector<unsigned char> privkeys;
     
-    UltraBuffer(int node) : numa_node(node) {
-        // Allocate memory on specific NUMA node with cache alignment
-        if (numa_available() >= 0) {
-            // Suppress mbind warnings by temporarily redirecting stderr
-            int old_stderr = dup(STDERR_FILENO);
-            int dev_null = open("/dev/null", O_WRONLY);
-            if (dev_null >= 0) {
-                dup2(dev_null, STDERR_FILENO);
-                close(dev_null);
-            }
-            
-            // Try to bind memory to NUMA node - this may fail in VMware environments
-            // but we continue anyway since memory allocation succeeded
-            numa_tonode_memory(seeds, sizeof(seeds), node);
-            numa_tonode_memory(pubkeys, sizeof(pubkeys), node);
-            numa_tonode_memory(privkeys, sizeof(privkeys), node);
-            
-            // Restore stderr
-            if (old_stderr >= 0) {
-                dup2(old_stderr, STDERR_FILENO);
-                close(old_stderr);
-            }
-        }
+    SimpleBuffer() {
+        seeds.resize(16384 * 32);
+        pubkeys.resize(16384 * 32);
+        privkeys.resize(16384 * 64);
     }
 };
 
@@ -236,33 +215,14 @@ void print_status(uint64_t attempts, int found, double keys_per_sec, const std::
               << "          " << std::flush;
 }
 
-// Ultra-optimized thread affinity with L3 cache awareness
-void set_ultra_thread_affinity(int cpu_id) {
+// Simple thread affinity - just pin to individual cores
+void set_simple_thread_affinity(int cpu_id) {
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
-    
-    // On Xeon Gold 5220: 18 cores share L3 cache, optimize for cache locality
-    int l3_group = cpu_id / 18;  // 18 cores per L3 cache
-    int start_core = l3_group * 18;
-    
-    // Use cores that share L3 cache for better performance
-    for (int i = 0; i < 18; i++) {
-        CPU_SET(start_core + i, &cpuset);
-    }
+    CPU_SET(cpu_id, &cpuset);
     
     pthread_t current_thread = pthread_self();
-    int result = pthread_setaffinity_np(current_thread, sizeof(cpu_set_t), &cpuset);
-    if (result != 0) {
-        // Fallback to single core if group affinity fails
-        CPU_ZERO(&cpuset);
-        CPU_SET(cpu_id, &cpuset);
-        pthread_setaffinity_np(current_thread, sizeof(cpu_set_t), &cpuset);
-    }
-    
-    // Set thread priority to maximum
-    struct sched_param param;
-    param.sched_priority = sched_get_priority_max(SCHED_FIFO);
-    pthread_setschedparam(current_thread, SCHED_FIFO, &param);
+    pthread_setaffinity_np(current_thread, sizeof(cpu_set_t), &cpuset);
 }
 
 // Get NUMA node for CPU core
@@ -311,16 +271,13 @@ void secure_ed25519_keypair(unsigned char* pubkey, unsigned char* privkey) {
     memcpy(privkey + 32, privkey, 32);
 }
 
-// Ultra-optimized CPU worker thread for sustained 2M+ performance
-void ultra_cpu_worker(const Config& config, int thread_id, int cpu_id) {
-    // Set ultra-optimized thread affinity
-    set_ultra_thread_affinity(cpu_id);
+// Simple CPU worker thread
+void simple_cpu_worker(const Config& config, int thread_id, int cpu_id) {
+    // Set simple thread affinity
+    set_simple_thread_affinity(cpu_id);
     
-    // Get NUMA node for this CPU
-    int numa_node = get_numa_node(cpu_id);
-    
-    // Allocate ultra-optimized buffers
-    UltraBuffer buffers(numa_node);
+    // Allocate simple buffers
+    SimpleBuffer buffers;
     
     std::string pub_hex, priv_hex;
     pub_hex.reserve(64);
@@ -329,36 +286,17 @@ void ultra_cpu_worker(const Config& config, int thread_id, int cpu_id) {
     uint64_t local_attempts = 0;
     const int UPDATE_INTERVAL = 1000;
     
-    // Ultra-aggressive prefetching for maximum cache performance
-    __builtin_prefetch(buffers.seeds, 0, 3);      // Read, high locality
-    __builtin_prefetch(buffers.pubkeys, 1, 3);    // Write, high locality
-    __builtin_prefetch(buffers.privkeys, 1, 3);   // Write, high locality
-    
     while (!stop_search.load()) {
-        // Generate batch of keys with optimized memory access
+        // Generate batch of keys
         for (size_t i = 0; i < config.batch_size; ++i) {
-            // Prefetch next elements aggressively (2-3 cache lines ahead)
-            if (i + 128 < config.batch_size) {
-                __builtin_prefetch(&buffers.seeds[(i + 128) * 32], 0, 3);
-                __builtin_prefetch(&buffers.pubkeys[(i + 128) * 32], 1, 3);
-                __builtin_prefetch(&buffers.privkeys[(i + 128) * 64], 1, 3);
-            }
-            
-            // Use secure Ed25519 key generation
             secure_ed25519_keypair(&buffers.pubkeys[i * 32], &buffers.privkeys[i * 64]);
         }
         
-        // Process batch with ultra-optimized cache strategy
+        // Process batch
         for (size_t i = 0; i < config.batch_size; ++i) {
             if (stop_search.load()) break;
             
             local_attempts++;
-            
-            // Ultra-aggressive prefetching for next elements
-            if (i + 64 < config.batch_size) {
-                __builtin_prefetch(&buffers.pubkeys[(i + 64) * 32], 0, 1);
-                __builtin_prefetch(&buffers.privkeys[(i + 64) * 64], 0, 1);
-            }
             
             bool prefix_match = check_prefix_ultra(&buffers.pubkeys[i * 32], config.prefix);
             
@@ -367,9 +305,9 @@ void ultra_cpu_worker(const Config& config, int thread_id, int cpu_id) {
                 to_hex_ultra(&buffers.pubkeys[i * 32], 32, pub_hex);
                 
                 if (config.search_mode == 2 && check_suffix_ultra(&buffers.pubkeys[i * 32], config.prefix)) {
-                    log_key(priv_hex, pub_hex, "ULTRA-Prefix+Suffix");
+                    log_key(priv_hex, pub_hex, "Prefix+Suffix");
                 } else {
-                    log_key(priv_hex, pub_hex, "ULTRA-Prefix");
+                    log_key(priv_hex, pub_hex, "Prefix");
                 }
                 
                 keys_found.fetch_add(1);
@@ -408,10 +346,10 @@ double measure_performance(const Config& config) {
     // Test with optimal thread count
     int test_threads = std::min(config.cpu_threads, 18);
     
-    for (int i = 0; i < test_threads; ++i) {
-        auto test_worker = [&, i]() {
-            int cpu_id = i % config.cpu_threads;
-            set_ultra_thread_affinity(cpu_id);
+            for (int i = 0; i < test_threads; ++i) {
+            auto test_worker = [&, i]() {
+                int cpu_id = i % config.cpu_threads;
+                set_simple_thread_affinity(cpu_id);
             
             uint64_t local_keys = 0;
             auto end_time = start + std::chrono::seconds(TEST_DURATION);
@@ -540,7 +478,7 @@ int main(int argc, char* argv[]) {
     
     // Calculate optimal thread distribution for sustained performance
     unsigned int total_cores = std::thread::hardware_concurrency();
-    config.cpu_threads = 36; // TEST: Use only one socket to isolate memory bandwidth
+    config.cpu_threads = 72; // Use all cores for maximum performance
     
     std::cout << "\n🚀 Configuration:\n";
     std::cout << "CPU threads: " << config.cpu_threads << " | NUMA: " << (numa_supported ? "Yes" : "No") << " | AVX-512: " << (avx512_supported ? "Yes" : "No") << "\n";
@@ -574,7 +512,7 @@ int main(int argc, char* argv[]) {
     
     // Start CPU workers
     for (int i = 0; i < config.cpu_threads; ++i) {
-        threads.emplace_back(ultra_cpu_worker, std::ref(config), i, i);
+        threads.emplace_back(simple_cpu_worker, std::ref(config), i, i);
     }
     std::cout << "Started " << config.cpu_threads << " workers\n";
     
@@ -598,7 +536,7 @@ int main(int argc, char* argv[]) {
             peak_performance = current_keys_per_sec;
         }
         
-        print_status(current_attempts, current_found, current_keys_per_sec, "SECURE-ULTRA");
+        print_status(current_attempts, current_found, current_keys_per_sec, "SEARCH");
         
         // Show performance status
         if (current_keys_per_sec >= 2000000) {
