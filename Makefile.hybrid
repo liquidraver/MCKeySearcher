@@ -30,8 +30,9 @@ LIBS = -L$(CUDA_LIB) -lcudart -lcurand -lsodium -lpthread -lnuma
 INCLUDES = -I$(CUDA_INC)
 
 # Source files
+CUDA_SRC = ed25519_cuda.cu cuda_wrapper.cu
 CPP_SRC = main_hybrid.cpp
-OBJ_FILES = main_hybrid.o
+OBJ_FILES = ed25519_cuda.o cuda_wrapper.o main_hybrid.o
 
 # Target
 TARGET = mckeysearcher_hybrid
@@ -42,6 +43,13 @@ all: $(TARGET)
 # Build the main executable
 $(TARGET): $(OBJ_FILES)
 	$(CXX) $(CXX_FLAGS) $(OBJ_FILES) $(LIBS) -o $(TARGET)
+
+# Compile CUDA sources
+ed25519_cuda.o: ed25519_cuda.cu
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) -c $< -o $@
+
+cuda_wrapper.o: cuda_wrapper.cu
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) -c $< -o $@
 
 # Compile C++ source
 main_hybrid.o: $(CPP_SRC)
