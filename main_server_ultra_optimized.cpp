@@ -643,24 +643,29 @@ int main() {
     int behavior;
     std::cin >> behavior;
     
-    switch (behavior) {
-        case 1:
-            stop_after_one_key = true;
-            target_keys_to_find = 0;
-            break;
-        case 2:
-            std::cout << "Number of keys to find: ";
-            std::cin >> target_keys_to_find;
-            stop_after_one_key = false;
-            break;
-        case 3:
-            stop_after_one_key = false;
-            target_keys_to_find = 0;
-            break;
-        default:
-            stop_after_one_key = true;
-            target_keys_to_find = 0;
-            break;
+    {
+        switch (behavior) {
+            case 1:
+                stop_after_one_key = true;
+                target_keys_to_find = 0;
+                break;
+            case 2: {
+                std::cout << "Number of keys to find: ";
+                int temp_target;
+                std::cin >> temp_target;
+                target_keys_to_find.store(temp_target);
+                stop_after_one_key = false;
+                break;
+            }
+            case 3:
+                stop_after_one_key = false;
+                target_keys_to_find = 0;
+                break;
+            default:
+                stop_after_one_key = true;
+                target_keys_to_find = 0;
+                break;
+        }
     }
     
     // Initialize prefix info
@@ -768,26 +773,29 @@ int main() {
         int choice;
         std::cin >> choice;
         
-        switch (choice) {
-            case 1:
-                std::cout << "\nFound keys:" << std::endl;
-                std::cout << "==========" << std::endl;
-                std::ifstream keys_file("found_keys.txt");
-                if (keys_file.is_open()) {
-                    std::string line;
-                    while (std::getline(keys_file, line)) {
-                        std::cout << line << std::endl;
+        {
+            switch (choice) {
+                case 1: {
+                    std::cout << "\nFound keys:" << std::endl;
+                    std::cout << "==========" << std::endl;
+                    std::ifstream keys_file("found_keys.txt");
+                    if (keys_file.is_open()) {
+                        std::string line;
+                        while (std::getline(keys_file, line)) {
+                            std::cout << line << std::endl;
+                        }
+                        keys_file.close();
                     }
-                    keys_file.close();
+                    break;
                 }
-                break;
-            case 2:
-                secure_wipe_found_keys();
-                break;
-            case 3:
-            default:
-                std::cout << "Exiting. Remember to securely delete found_keys.txt!" << std::endl;
-                break;
+                case 2:
+                    secure_wipe_found_keys();
+                    break;
+                case 3:
+                default:
+                    std::cout << "Exiting. Remember to securely delete found_keys.txt!" << std::endl;
+                    break;
+            }
         }
     }
     
