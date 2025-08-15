@@ -458,6 +458,124 @@ double measure_cache_performance(const Config& config) {
     return keys_per_sec;
 }
 
+// Crypto performance test to isolate Ed25519 bottleneck
+double measure_crypto_performance(const Config& config) {
+    std::cout << "\nRunning CRYPTO performance test (5 seconds)..." << std::endl;
+    std::cout << "Testing pure Ed25519 key generation speed..." << std::endl;
+    
+    const size_t TEST_BATCH = 1024;
+    const int TEST_DURATION = 5;
+    
+    std::atomic<uint64_t> total_keys(0);
+    std::vector<std::thread> threads;
+    
+    auto start = std::chrono::steady_clock::now();
+    
+    // Test with optimal thread count for crypto performance
+    int test_threads = 18; // One L3 cache group
+    
+    for (int i = 0; i < test_threads; ++i) {
+        auto test_worker = [&, i]() {
+            int cpu_id = i % config.cpu_threads;
+            set_ultra_thread_affinity(cpu_id);
+            
+            // Minimal buffers - just for crypto operations
+            unsigned char seed[32];
+            unsigned char pubkey[32];
+            unsigned char privkey[64];
+            
+            uint64_t local_keys = 0;
+            auto end_time = start + std::chrono::seconds(TEST_DURATION);
+            
+            while (std::chrono::steady_clock::now() < end_time) {
+                for (size_t j = 0; j < TEST_BATCH; ++j) {
+                    // Pure crypto operations - no memory overhead
+                    randombytes_buf(seed, 32);
+                    crypto_sign_ed25519_keypair(pubkey, privkey);
+                }
+                local_keys += TEST_BATCH;
+            }
+            
+            total_keys.fetch_add(local_keys);
+        };
+        
+        threads.emplace_back(test_worker);
+    }
+    
+    for (auto& t : threads) {
+        t.join();
+    }
+    
+    auto end = std::chrono::steady_clock::now();
+    std::chrono::duration<double> elapsed = end - start;
+    
+    double keys_per_sec = total_keys.load() / elapsed.count();
+    
+    std::cout << "CRYPTO Performance: " << std::fixed << std::setprecision(0) 
+              << keys_per_sec << " keys/sec (" << test_threads << " test threads)" << std::endl;
+    
+    return keys_per_sec;
+}
+
+// Thread scaling test to find optimal thread count
+double measure_thread_scaling(const Config& config) {
+    std::cout << "\nRunning THREAD SCALING test..." << std::endl;
+    std::cout << "Testing performance with different thread counts..." << std::endl;
+    
+    const size_t TEST_BATCH = 1024;
+    const int TEST_DURATION = 3;
+    
+    std::vector<int> thread_counts = {1, 2, 4, 8, 16, 18, 36};
+    
+    for (int thread_count : thread_counts) {
+        std::atomic<uint64_t> total_keys(0);
+        std::vector<std::thread> threads;
+        
+        auto start = std::chrono::steady_clock::now();
+        
+        for (int i = 0; i < thread_count; ++i) {
+            auto test_worker = [&, i]() {
+                int cpu_id = i % config.cpu_threads;
+                set_ultra_thread_affinity(cpu_id);
+                
+                // Minimal buffers
+                unsigned char seed[32];
+                unsigned char pubkey[32];
+                unsigned char privkey[64];
+                
+                uint64_t local_keys = 0;
+                auto end_time = start + std::chrono::seconds(TEST_DURATION);
+                
+                while (std::chrono::steady_clock::now() < end_time) {
+                    for (size_t j = 0; j < TEST_BATCH; ++j) {
+                        randombytes_buf(seed, 32);
+                        crypto_sign_ed25519_keypair(pubkey, privkey);
+                    }
+                    local_keys += TEST_BATCH;
+                }
+                
+                total_keys.fetch_add(local_keys);
+            };
+            
+            threads.emplace_back(test_worker);
+        }
+        
+        for (auto& t : threads) {
+            t.join();
+        }
+        
+        auto end = std::chrono::steady_clock::now();
+        std::chrono::duration<double> elapsed = end - start;
+        
+        double keys_per_sec = total_keys.load() / elapsed.count();
+        
+        std::cout << "  " << thread_count << " threads: " << std::fixed << std::setprecision(0) 
+                  << keys_per_sec << " keys/sec" << std::endl;
+    }
+    
+    return 0.0; // Return value not used for this test
+}
+
 // Main function
 int main(int argc, char* argv[]) {
     // Initialize libsodium
@@ -568,6 +686,12 @@ int main(int argc, char* argv[]) {
     
     // Measure cache performance for diagnostics
     double cache_perf = measure_cache_performance(config);
+    
+    // Measure crypto performance for diagnostics
+    double crypto_perf = measure_crypto_performance(config);
+
+    // Measure thread scaling
+    measure_thread_scaling(config);
     
     // Calculate expected time
     size_t prefix_len = prefix.length() / 2;
