@@ -27,6 +27,9 @@ all: $(TARGET)
 $(TARGET): $(SRC)
 	$(CXX) $(CXX_FLAGS) $(SRC) $(LIBS) -o $(TARGET)
 
+# Ultra build (alias for default)
+ultra: $(TARGET)
+
 # Performance build (default)
 perf: $(TARGET)
 
@@ -81,6 +84,7 @@ check-profile:
 help:
 	@echo "Available targets:"
 	@echo "  all          - Build optimized version (default)"
+	@echo "  ultra        - Build ultra-optimized version (alias for all)"
 	@echo "  perf         - Build performance version"
 	@echo "  profile      - Build with profile generation"
 	@echo "  pgo          - Build with PGO optimization"
@@ -94,4 +98,4 @@ help:
 	@echo "  check-profile- Check PGO profile data"
 	@echo "  help         - Show this help"
 
-.PHONY: all perf profile pgo pgo-force debug quick numa check install-deps clean check-profile help
+.PHONY: all ultra perf profile pgo pgo-force debug quick numa check install-deps clean check-profile help
