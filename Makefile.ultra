@@ -1,143 +1,97 @@
-# ULTRA-OPTIMIZED Ed25519 Key Searcher Makefile
-# Targeting sustained 2M+ keys/sec performance on Intel Xeon Gold 5220
-# With maximum optimization, cache-line alignment, and aggressive tuning
+# Makefile for MCKeySearcher Ultra-Optimized Version
+# Optimized for Intel Xeon Gold 5220 (Cascade Lake) with AVX-512
 
-# Compiler
+TARGET = mckeysearcher_ultra
+SRC = main_server_ultra_optimized.cpp
 CXX = g++
 
-# Ultra-aggressive compiler flags for maximum performance
+# Ultra-aggressive optimization flags for Intel Xeon Gold 5220
 CXX_FLAGS = -std=c++17 -O3 -march=cascadelake -mtune=cascadelake \
             -fomit-frame-pointer -pthread -DNDEBUG \
             -funroll-loops -fprefetch-loop-arrays \
             -mavx512f -mavx512dq -mavx512bw -mavx512vl -mavx512cd \
-            -mfma -mbmi2 -march=native -mtune=native \
+            -mfma -mbmi2 \
+            -march=native -mtune=native \
             -flto -fwhole-program -fuse-linker-plugin \
-                         -fno-stack-protector -fno-asynchronous-unwind-tables \
-             -fno-unwind-tables -fno-ident \
-             -fno-rtti \
-            -Wl,-O1 -Wl,--as-needed -Wl,--strip-all \
-            -DULTRA_OPTIMIZED=1
+            -fno-stack-protector -fno-asynchronous-unwind-tables \
+            -fno-unwind-tables -fno-ident \
+            -DULTRA_OPTIMIZED=1 -DNDEBUG -march=native -mtune=native
 
-# Libraries
-LIBS = -lsodium -lpthread -lnuma
-
-# Source files
-SRC = main_server_ultra_optimized.cpp
-TARGET = mckeysearcher_ultra
+# Link with OpenSSL for secure Ed25519 and SHA-NI
+LIBS = -lssl -lcrypto -lpthread -lnuma
 
 # Default target
 all: $(TARGET)
 
-# Build the ultra-optimized executable
+# Build the ultra-optimized version
 $(TARGET): $(SRC)
 	$(CXX) $(CXX_FLAGS) $(SRC) $(LIBS) -o $(TARGET)
-	@echo "🚀 ULTRA-OPTIMIZED build complete!"
-	@echo "🎯 Target: Sustained 2M+ keys/sec performance"
 
-# Clean build files
-clean:
-	rm -f $(TARGET) *.o *.gcda *.gcno *.profdata
-	@echo "🧹 Cleaned all build artifacts"
-
-# Install dependencies (Ubuntu/Debian)
-install-deps:
-	sudo apt update
-	sudo apt install -y build-essential g++ make
-	sudo apt install -y libsodium-dev libnuma-dev
-	@echo "📦 Dependencies installed"
-
-# Ultra-performance build (maximum optimization)
-ultra: CXX_FLAGS += -DNDEBUG -march=native -mtune=native
-ultra: $(TARGET)
-
-# Profile generation build (for PGO)
-profile: CXX_FLAGS += -fprofile-generate
-profile: $(TARGET)
-	@echo "📊 Profile generation build complete"
-	@echo "💡 Run the program to collect performance data"
+# Performance build (default)
+perf: $(TARGET)
 
 # Profile-guided optimization build
-pgo: CXX_FLAGS += -fprofile-use -fprofile-correction
-pgo: $(TARGET)
-	@echo "🎯 PGO-optimized build complete"
+profile: $(SRC)
+	$(CXX) $(CXX_FLAGS) -fprofile-generate $(SRC) $(LIBS) -o $(TARGET)_profile
 
-# Force PGO rebuild (when profile data exists, without cleaning)
-pgo-force:
-	$(CXX) $(CXX_FLAGS) -fprofile-use -fprofile-correction $(SRC) $(LIBS) -o $(TARGET)
-	@echo "🎯 PGO-optimized build complete (forced rebuild)"
+# PGO-optimized build
+pgo: $(SRC)
+	$(CXX) $(CXX_FLAGS) -fprofile-use -fprofile-correction $(SRC) $(LIBS) -o $(TARGET)_pgo
+
+# Force PGO rebuild
+pgo-force: $(SRC)
+	$(CXX) $(CXX_FLAGS) -fprofile-use -fprofile-correction $(SRC) $(LIBS) -o $(TARGET)_pgo
 
 # Debug build
-debug: CXX_FLAGS = -std=c++17 -g -O0 -pthread -DDEBUG
-debug: $(TARGET)
-	@echo "🐛 Debug build complete"
+debug: $(SRC)
+	$(CXX) -std=c++17 -O0 -g -DDEBUG -pthread $(SRC) $(LIBS) -o $(TARGET)_debug
 
-# Quick test build (minimal optimization for faster compilation)
-quick: CXX_FLAGS = -std=c++17 -O1 -pthread
-quick: $(TARGET)
-	@echo "⚡ Quick build complete"
+# Quick build (basic optimizations)
+quick: $(SRC)
+	$(CXX) -std=c++17 -O2 -pthread $(SRC) $(LIBS) -o $(TARGET)_quick
 
 # NUMA-aware build
-numa: CXX_FLAGS += -DNUMA_AWARE=1
-numa: $(TARGET)
-	@echo "🏗️  NUMA-aware build complete"
+numa: $(SRC)
+	$(CXX) -std=c++17 -O3 -pthread -lnuma $(SRC) $(LIBS) -o $(TARGET)_numa
 
-# Check if profile data exists
+# System check
+check:
+	@echo "Checking system capabilities..."
+	@echo "Compiler: $(shell $(CXX) --version | head -1)"
+	@echo "OpenSSL: $(shell pkg-config --modversion openssl 2>/dev/null || echo "Not found")"
+	@echo "NUMA: $(shell pkg-config --modversion numa 2>/dev/null || echo "Not found")"
+	@echo "AVX-512: $(shell $(CXX) -mavx512f -E - < /dev/null >/dev/null 2>&1 && echo "Supported" || echo "Not supported")"
+
+# Install dependencies
+install-deps:
+	@echo "Installing dependencies..."
+	sudo apt-get update
+	sudo apt-get install -y build-essential libssl-dev libnuma-dev
+
+# Clean build artifacts
+clean:
+	rm -f $(TARGET) $(TARGET)_* *.o *.gcda *.gcno *.profdata
+
+# Check profile data
 check-profile:
-	@echo "🔍 Checking for profile data..."
-	@if [ -f "mckeysearcher_ultra-main_server_ultra_optimized.gcda" ]; then \
-		echo "✅ Profile data found: mckeysearcher_ultra-main_server_ultra_optimized.gcda"; \
-		echo "   Size: $(shell ls -lh mckeysearcher_ultra-main_server_ultra_optimized.gcda | awk '{print $$5}')"; \
-	else \
-		echo "❌ No profile data found. Run 'make profile' first, then run the program."; \
-	fi
+	@echo "Checking PGO profile data..."
+	@ls -la *.gcda *.gcno *.profdata 2>/dev/null || echo "No profile data found"
 
-# Check system capabilities
-check-system:
-	@echo "🔍 Checking system capabilities..."
-	@echo "CPU cores: $(shell nproc)"
-	@echo "NUMA nodes: $(shell numactl --hardware | grep available | head -1 | awk '{print $$2}')"
-	@echo "Memory: $(shell free -h | grep Mem | awk '{print $$2}')"
-	@echo "Architecture: $(shell uname -m)"
-	@echo "AVX-512 support: $(shell grep -o 'avx512' /proc/cpuinfo | head -1 || echo 'Not detected')"
-
-# Performance monitoring
-monitor:
-	@echo "📊 Monitoring system performance..."
-	@echo "Press Ctrl+C to stop"
-	@watch -n 1 'echo "=== $(date) ==="; echo "CPU Usage:"; top -bn1 | grep "Cpu(s)" | awk "{print \$2}"; echo "Memory Usage:"; free -h | grep Mem; echo "NUMA Stats:"; numactl --hardware | grep -E "(node|size)"'
-
-# Performance comparison
-compare:
-	@echo "📊 Performance comparison targets:"
-	@echo "🎯 ULTRA target: Sustained 2M+ keys/sec"
-	@echo "🚀 Excellent: 1.5M+ keys/sec"
-	@echo "📈 Good: 1.0M+ keys/sec"
-	@echo "💡 Run 'make ultra' to build the optimized version"
-
-# Help
+# Show help
 help:
-	@echo "🚀 ULTRA-OPTIMIZED Ed25519 Key Searcher Makefile"
-	@echo "🎯 Target: Sustained 2M+ keys/sec performance"
-	@echo ""
 	@echo "Available targets:"
-	@echo "  all          - Build ultra-optimized version (default)"
-	@echo "  ultra        - Maximum performance build"
-	@echo "  profile      - Profile generation build for PGO"
-	@echo "  pgo          - Profile-guided optimization build"
+	@echo "  all          - Build optimized version (default)"
+	@echo "  perf         - Build performance version"
+	@echo "  profile      - Build with profile generation"
+	@echo "  pgo          - Build with PGO optimization"
 	@echo "  pgo-force    - Force PGO rebuild"
-	@echo "  debug        - Debug build with symbols"
-	@echo "  quick        - Quick build for testing"
-	@echo "  numa         - NUMA-aware build"
-	@echo "  clean        - Remove all build artifacts"
-	@echo "  check-profile- Check if profile data exists"
-	@echo "  check-system - Check system capabilities"
-	@echo "  monitor      - Monitor system performance"
-	@echo "  compare      - Show performance targets"
-	@echo "  help         - Show this help message"
-	@echo ""
-	@echo "Performance targets:"
-	@echo "  🎯 ULTRA: Sustained 2M+ keys/sec"
-	@echo "  🚀 Excellent: 1.5M+ keys/sec"
-	@echo "  📈 Good: 1.0M+ keys/sec"
+	@echo "  debug        - Build debug version"
+	@echo "  quick        - Build with basic optimizations"
+	@echo "  numa         - Build NUMA-aware version"
+	@echo "  check        - Check system capabilities"
+	@echo "  install-deps - Install dependencies"
+	@echo "  clean        - Clean build artifacts"
+	@echo "  check-profile- Check PGO profile data"
+	@echo "  help         - Show this help"
 
-.PHONY: all clean install-deps ultra profile pgo pgo-force debug quick numa check-profile check-system monitor compare help
+.PHONY: all perf profile pgo pgo-force debug quick numa check install-deps clean check-profile help
