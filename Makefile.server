@@ -1,0 +1,78 @@
+# Server-Optimized Ed25519 Key Searcher Makefile
+# Optimized for high-core-count servers (72+ cores, 2+ sockets)
+# With NUMA awareness and aggressive optimization
+
+# Compiler
+CXX = g++
+
+# Compiler flags optimized for server CPUs
+CXX_FLAGS = -std=c++17 -O3 -march=native -mtune=native \
+            -fomit-frame-pointer -pthread -DNDEBUG \
+            -funroll-loops -fprefetch-loop-arrays \
+            -mavx2 -mfma -mbmi2 -march=skylake-avx512 \
+            -flto -fwhole-program -fuse-linker-plugin \
+            -fno-stack-protector -fno-asynchronous-unwind-tables \
+            -fno-unwind-tables -fno-ident \
+            -Wl,-O1 -Wl,--as-needed -Wl,--strip-all
+
+# Libraries
+LIBS = -lsodium -lpthread -lnuma
+
+# Source files
+SRC = main_server_optimized.cpp
+TARGET = mckeysearcher_server
+
+# Default target
+all: $(TARGET)
+
+# Build the executable
+$(TARGET): $(SRC)
+	$(CXX) $(CXX_FLAGS) $(SRC) $(LIBS) -o $(TARGET)
+
+# Clean build files
+clean:
+	rm -f $(TARGET) *.o
+
+# Install dependencies (Ubuntu/Debian)
+install-deps:
+	sudo apt update
+	sudo apt install -y build-essential g++ make
+	sudo apt install -y libsodium-dev libnuma-dev
+	sudo apt install -y hwloc hwloc-nox
+
+# Performance build (maximum server optimization)
+perf: CXX_FLAGS += -DNDEBUG -march=native -mtune=native
+perf: CXX_FLAGS += -fprofile-generate
+perf: $(TARGET)
+
+# Profile-guided optimization build
+pgo: CXX_FLAGS += -fprofile-use -fprofile-correction
+pgo: $(TARGET)
+
+# Debug build
+debug: CXX_FLAGS = -std=c++17 -g -O0 -pthread -DDEBUG
+debug: $(TARGET)
+
+# Quick test build (minimal optimization for faster compilation)
+quick: CXX_FLAGS = -std=c++17 -O1 -pthread
+quick: $(TARGET)
+
+# NUMA-aware build
+numa: CXX_FLAGS += -DNUMA_AWARE=1
+numa: $(TARGET)
+
+# Check system capabilities
+check-system:
+	@echo "Checking system capabilities..."
+	@echo "CPU cores: $(shell nproc)"
+	@echo "NUMA nodes: $(shell numactl --hardware | grep available | head -1 | awk '{print $$2}')"
+	@echo "Memory: $(shell free -h | grep Mem | awk '{print $$2}')"
+	@echo "Architecture: $(shell uname -m)"
+
+# Performance monitoring
+monitor:
+	@echo "Monitoring system performance..."
+	@echo "Press Ctrl+C to stop"
+	@watch -n 1 'echo "=== $(date) ==="; echo "CPU Usage:"; top -bn1 | grep "Cpu(s)" | awk "{print \$2}"; echo "Memory Usage:"; free -h | grep Mem; echo "NUMA Stats:"; numactl --hardware | grep -E "(node|size)"'
+
+.PHONY: all clean install-deps perf pgo debug quick numa check-system monitor
