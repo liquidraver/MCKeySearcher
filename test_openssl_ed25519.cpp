@@ -14,7 +14,7 @@ void test_ed25519_keygen() {
     
     // Initialize OpenSSL
     OpenSSL_add_all_algorithms();
-    ERR_load_crypto_strings();
+    ERR_load_CRYPTO_strings();
     
     // Seed random number generator
     if (RAND_poll() != 1) {
@@ -83,7 +83,6 @@ void test_ed25519_keygen() {
     EVP_PKEY_free(pkey);
     EVP_PKEY_CTX_free(ctx);
     EVP_cleanup();
-    ERR_free_strings();
     
     std::cout << "✅ Test completed successfully!" << std::endl;
 }

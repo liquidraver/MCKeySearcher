@@ -635,7 +635,7 @@ double measure_thread_scaling(const Config& config) {
 int main(int argc, char* argv[]) {
     // Initialize OpenSSL
     OpenSSL_add_all_algorithms();
-    ERR_load_crypto_strings();
+    ERR_load_CRYPTO_strings();
     
     // Seed the random number generator
     if (RAND_poll() != 1) {
@@ -841,7 +841,6 @@ int main(int argc, char* argv[]) {
     
     // Cleanup OpenSSL
     EVP_cleanup();
-    ERR_free_strings();
     
     return 0;
 }
