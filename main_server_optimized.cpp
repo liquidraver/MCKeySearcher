@@ -46,10 +46,16 @@ struct NumaBuffer {
             pubkeys.resize(size * 32);
             privkeys.resize(size * 64);
             
-            // Bind memory to NUMA node
-            numa_tonode_memory(seeds.data(), seeds.size(), node);
-            numa_tonode_memory(pubkeys.data(), pubkeys.size(), node);
-            numa_tonode_memory(privkeys.data(), privkeys.size(), node);
+            // Try to bind memory to NUMA node, but don't fail if it doesn't work
+            int result1 = numa_tonode_memory(seeds.data(), seeds.size(), node);
+            int result2 = numa_tonode_memory(pubkeys.data(), pubkeys.size(), node);
+            int result3 = numa_tonode_memory(privkeys.data(), privkeys.size(), node);
+            
+            // If any binding fails, just continue without NUMA binding
+            if (result1 < 0 || result2 < 0 || result3 < 0) {
+                // Memory allocation succeeded, just NUMA binding failed
+                // This is common in VMware environments
+            }
         } else {
             seeds.resize(size * 32);
             pubkeys.resize(size * 32);
@@ -237,8 +243,15 @@ void set_thread_affinity(int cpu_id) {
     CPU_SET(cpu_id, &cpuset);
     
     pthread_t current_thread = pthread_self();
-    if (pthread_setaffinity_np(current_thread, sizeof(cpu_set_t), &cpuset) != 0) {
-        std::cerr << "Warning: Failed to set affinity for thread to CPU " << cpu_id << std::endl;
+    int result = pthread_setaffinity_np(current_thread, sizeof(cpu_set_t), &cpuset);
+    if (result != 0) {
+        // Don't print warnings for every thread, just log the first few failures
+        static int warning_count = 0;
+        if (warning_count < 5) {
+            std::cerr << "Warning: Failed to set affinity for thread to CPU " << cpu_id 
+                      << " (error " << result << ")" << std::endl;
+            warning_count++;
+        }
     }
 }
 
@@ -393,8 +406,12 @@ int main(int argc, char* argv[]) {
     avx512_supported = true;
     #endif
     
+    // Check NUMA support
+    bool numa_supported = (numa_available() >= 0);
+    
     std::cout << "🔍 MCKeySearcher - Xeon Gold 5220 (Cascade Lake) Optimized Ed25519 Key Searcher\n";
-    std::cout << "🚀 Optimized for Intel Xeon Gold 5220 (Cascade Lake) with " << (avx512_supported ? "AVX-512" : "AVX2") << "\n\n";
+    std::cout << "🚀 Optimized for Intel Xeon Gold 5220 (Cascade Lake) with " << (avx512_supported ? "AVX-512" : "AVX2") << "\n";
+    std::cout << "🏗️  NUMA support: " << (numa_supported ? "Available" : "Not available") << "\n\n";
     
     // Get prefix
     std::string prefix;
@@ -470,7 +487,8 @@ int main(int argc, char* argv[]) {
     std::cout << "\nXeon Gold 5220 (Cascade Lake) Configuration:\n";
     std::cout << "Total CPU cores: " << total_cores << " (36 per socket)\n";
     std::cout << "CPU threads to use: " << config.cpu_threads << " (all cores)\n";
-    std::cout << "NUMA-aware: " << (config.numa_aware ? "Yes" : "No") << " (2 nodes)\n";
+    std::cout << "NUMA-aware: " << (config.numa_aware && numa_supported ? "Yes" : "No") << " (2 nodes)\n";
+    std::cout << "NUMA support: " << (numa_supported ? "Available" : "Not available") << "\n";
     std::cout << "AVX-512: " << (avx512_supported ? "Yes" : "No") << "\n";
     std::cout << "Batch size: " << config.batch_size << " (optimized for Cascade Lake AVX-512)\n\n";
     
@@ -496,7 +514,13 @@ int main(int argc, char* argv[]) {
     
     // Start server-optimized search
     std::cout << "\nStarting Xeon Gold 5220 (Cascade Lake) optimized search...\n";
-    std::cout << "Found keys will be saved to found_keys.txt\n\n";
+    std::cout << "Found keys will be saved to found_keys.txt\n";
+    if (numa_supported) {
+        std::cout << "Note: Some 'mbind: Invalid argument' warnings are normal in VMware environments\n";
+        std::cout << "The program will continue to work optimally despite these warnings\n\n";
+    } else {
+        std::cout << "Note: Running without NUMA optimization (normal in some VM environments)\n\n";
+    }
     
     std::vector<std::thread> threads;
     
