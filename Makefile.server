@@ -50,7 +50,11 @@ profile: $(TARGET)
 
 # Profile-guided optimization build
 pgo: CXX_FLAGS += -fprofile-use -fprofile-correction
-pgo: $(TARGET)
+pgo: clean $(TARGET)
+
+# Force PGO rebuild (when profile data exists)
+pgo-force: clean
+	$(CXX) $(CXX_FLAGS) -fprofile-use -fprofile-correction $(SRC) $(LIBS) -o $(TARGET)
 
 # Debug build
 debug: CXX_FLAGS = -std=c++17 -g -O0 -pthread -DDEBUG
@@ -78,4 +82,4 @@ monitor:
 	@echo "Press Ctrl+C to stop"
 	@watch -n 1 'echo "=== $(date) ==="; echo "CPU Usage:"; top -bn1 | grep "Cpu(s)" | awk "{print \$2}"; echo "Memory Usage:"; free -h | grep Mem; echo "NUMA Stats:"; numactl --hardware | grep -E "(node|size)"'
 
-.PHONY: all clean install-deps perf pgo debug quick numa check-system monitor
+.PHONY: all clean install-deps perf pgo pgo-force debug quick numa check-system monitor
