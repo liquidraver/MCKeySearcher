@@ -18,6 +18,8 @@
 #include <pthread.h>
 #include <numa.h>
 #include <immintrin.h>
+#include <fcntl.h>
+#include <unistd.h>
 // hwloc.h not needed for our optimizations
 
 // Ultra-optimized configuration for Intel Xeon Gold 5220
@@ -49,15 +51,25 @@ struct alignas(64) UltraBuffer {
     UltraBuffer(int node) : numa_node(node) {
         // Allocate memory on specific NUMA node with cache alignment
         if (numa_available() >= 0) {
+            // Suppress mbind warnings by temporarily redirecting stderr
+            int old_stderr = dup(STDERR_FILENO);
+            int dev_null = open("/dev/null", O_WRONLY);
+            if (dev_null >= 0) {
+                dup2(dev_null, STDERR_FILENO);
+                close(dev_null);
+            }
+            
             // Try to bind memory to NUMA node - this may fail in VMware environments
             // but we continue anyway since memory allocation succeeded
             numa_tonode_memory(seeds, sizeof(seeds), node);
             numa_tonode_memory(pubkeys, sizeof(pubkeys), node);
             numa_tonode_memory(privkeys, sizeof(privkeys), node);
             
-            // Note: numa_tonode_memory returns void, so we can't check for errors
-            // In VMware environments, this may generate "mbind: Invalid argument" warnings
-            // but the program continues to work optimally
+            // Restore stderr
+            if (old_stderr >= 0) {
+                dup2(old_stderr, STDERR_FILENO);
+                close(old_stderr);
+            }
         }
     }
 };
@@ -381,43 +393,31 @@ void ultra_cpu_worker(const Config& config, int thread_id, int cpu_id) {
     }
 }
 
-// Ultra-optimized performance test targeting 2M+ sustained performance
-double measure_ultra_performance(const Config& config) {
-    std::cout << "\nRunning ULTRA-OPTIMIZED performance test (10 seconds)..." << std::endl;
-    std::cout << "Target: Sustained 2M+ keys/sec performance" << std::endl;
+// Performance measurement function (simplified)
+double measure_performance(const Config& config) {
+    std::cout << "\n🚀 Performance measurement (5 seconds)..." << std::endl;
     
-    const size_t TEST_BATCH = config.batch_size;
-    const int TEST_DURATION = 10;
+    const size_t TEST_BATCH = 1024;
+    const int TEST_DURATION = 5;
     
     std::atomic<uint64_t> total_keys(0);
     std::vector<std::thread> threads;
     
     auto start = std::chrono::steady_clock::now();
     
-    // Test with optimal thread count for sustained performance
-    int test_threads = std::min(config.cpu_threads, 18); // Focus on one L3 cache group first
+    // Test with optimal thread count
+    int test_threads = std::min(config.cpu_threads, 18);
     
     for (int i = 0; i < test_threads; ++i) {
         auto test_worker = [&, i]() {
             int cpu_id = i % config.cpu_threads;
             set_ultra_thread_affinity(cpu_id);
             
-            UltraBuffer buffers(get_numa_node(cpu_id));
-            
             uint64_t local_keys = 0;
             auto end_time = start + std::chrono::seconds(TEST_DURATION);
             
             while (std::chrono::steady_clock::now() < end_time) {
                 for (size_t j = 0; j < TEST_BATCH; ++j) {
-                    // Ultra-aggressive prefetching
-                    if (j + 128 < TEST_BATCH) {
-                        __builtin_prefetch(&buffers.seeds[(j + 128) * 32], 0, 3);
-                        __builtin_prefetch(&buffers.pubkeys[(j + 128) * 32], 1, 3);
-                        __builtin_prefetch(&buffers.privkeys[(j + 128) * 64], 1, 3);
-                    }
-                    
-                    // Use secure Ed25519 key generation
-                    unsigned char seed[32];
                     unsigned char pubkey[32];
                     unsigned char privkey[64];
                     secure_ed25519_keypair(pubkey, privkey);
@@ -440,199 +440,10 @@ double measure_ultra_performance(const Config& config) {
     
     double keys_per_sec = total_keys.load() / elapsed.count();
     
-    std::cout << "ULTRA Performance: " << std::fixed << std::setprecision(0) 
-              << keys_per_sec << " keys/sec (" << test_threads << " test threads)" << std::endl;
-    
-    if (keys_per_sec >= 2000000) {
-        std::cout << "🎯 TARGET ACHIEVED: Sustained 2M+ keys/sec performance!" << std::endl;
-    } else if (keys_per_sec >= 1500000) {
-        std::cout << "🚀 EXCELLENT: Performance improved significantly!" << std::endl;
-    } else {
-        std::cout << "📈 GOOD: Performance baseline maintained" << std::endl;
-    }
+    std::cout << "Performance: " << std::fixed << std::setprecision(0) 
+              << keys_per_sec << " keys/sec (" << test_threads << " threads)" << std::endl;
     
     return keys_per_sec;
-}
-
-// Cache performance test to identify bottlenecks
-double measure_cache_performance(const Config& config) {
-    std::cout << "\nRunning CACHE performance test (5 seconds)..." << std::endl;
-    std::cout << "Testing L1/L2/L3 cache efficiency..." << std::endl;
-    
-    const size_t TEST_BATCH = 1024; // Smaller batch for cache testing
-    const int TEST_DURATION = 5;
-    
-    std::atomic<uint64_t> total_keys(0);
-    std::vector<std::thread> threads;
-    
-    auto start = std::chrono::steady_clock::now();
-    
-    // Test with optimal thread count for cache performance
-    int test_threads = 18; // One L3 cache group
-    
-    for (int i = 0; i < test_threads; ++i) {
-        auto test_worker = [&, i]() {
-            int cpu_id = i % config.cpu_threads;
-            set_ultra_thread_affinity(cpu_id);
-            
-            UltraBuffer buffers(get_numa_node(cpu_id));
-            
-            uint64_t local_keys = 0;
-            auto end_time = start + std::chrono::seconds(TEST_DURATION);
-            
-            while (std::chrono::steady_clock::now() < end_time) {
-                for (size_t j = 0; j < TEST_BATCH; ++j) {
-                    // Focus on cache-friendly access patterns
-                    if (j + 16 < TEST_BATCH) {
-                        __builtin_prefetch(&buffers.seeds[(j + 16) * 32], 0, 1);
-                        __builtin_prefetch(&buffers.pubkeys[j * 32], 1, 1);
-                        __builtin_prefetch(&buffers.privkeys[j * 64], 1, 1);
-                    }
-                    
-                    // Use secure Ed25519 key generation
-                    unsigned char seed[32];
-                    unsigned char pubkey[32];
-                    unsigned char privkey[64];
-                    secure_ed25519_keypair(pubkey, privkey);
-                }
-                local_keys += TEST_BATCH;
-            }
-            
-            total_keys.fetch_add(local_keys);
-        };
-        
-        threads.emplace_back(test_worker);
-    }
-    
-    for (auto& t : threads) {
-        t.join();
-    }
-    
-    auto end = std::chrono::steady_clock::now();
-    std::chrono::duration<double> elapsed = end - start;
-    
-    double keys_per_sec = total_keys.load() / elapsed.count();
-    
-    std::cout << "CACHE Performance: " << std::fixed << std::setprecision(0) 
-              << keys_per_sec << " keys/sec (" << test_threads << " test threads)" << std::endl;
-    
-    return keys_per_sec;
-}
-
-// Crypto performance test to isolate Ed25519 bottleneck
-double measure_crypto_performance(const Config& config) {
-    std::cout << "\nRunning CRYPTO performance test (5 seconds)..." << std::endl;
-    std::cout << "Testing pure Ed25519 key generation speed..." << std::endl;
-    
-    const size_t TEST_BATCH = 1024;
-    const int TEST_DURATION = 5;
-    
-    std::atomic<uint64_t> total_keys(0);
-    std::vector<std::thread> threads;
-    
-    auto start = std::chrono::steady_clock::now();
-    
-    // Test with optimal thread count for crypto performance
-    int test_threads = 18; // One L3 cache group
-    
-    for (int i = 0; i < test_threads; ++i) {
-        auto test_worker = [&, i]() {
-            int cpu_id = i % config.cpu_threads;
-            set_ultra_thread_affinity(cpu_id);
-            
-            // Minimal buffers - just for crypto operations
-            unsigned char seed[32];
-            unsigned char pubkey[32];
-            unsigned char privkey[64];
-            
-            uint64_t local_keys = 0;
-            auto end_time = start + std::chrono::seconds(TEST_DURATION);
-            
-            while (std::chrono::steady_clock::now() < end_time) {
-                for (size_t j = 0; j < TEST_BATCH; ++j) {
-                    // Pure crypto operations - no memory overhead
-                    secure_ed25519_keypair(pubkey, privkey);
-                }
-                local_keys += TEST_BATCH;
-            }
-            
-            total_keys.fetch_add(local_keys);
-        };
-        
-        threads.emplace_back(test_worker);
-    }
-    
-    for (auto& t : threads) {
-        t.join();
-    }
-    
-    auto end = std::chrono::steady_clock::now();
-    std::chrono::duration<double> elapsed = end - start;
-    
-    double keys_per_sec = total_keys.load() / elapsed.count();
-    
-    std::cout << "CRYPTO Performance: " << std::fixed << std::setprecision(0) 
-              << keys_per_sec << " keys/sec (" << test_threads << " test threads)" << std::endl;
-    
-    return keys_per_sec;
-}
-
-// Thread scaling test to find optimal thread count
-double measure_thread_scaling(const Config& config) {
-    std::cout << "\nRunning THREAD SCALING test..." << std::endl;
-    std::cout << "Testing performance with different thread counts..." << std::endl;
-    
-    const size_t TEST_BATCH = 1024;
-    const int TEST_DURATION = 3;
-    
-    std::vector<int> thread_counts = {1, 2, 4, 8, 16, 18, 36};
-    
-    for (int thread_count : thread_counts) {
-        std::atomic<uint64_t> total_keys(0);
-        std::vector<std::thread> threads;
-        
-        auto start = std::chrono::steady_clock::now();
-        
-        for (int i = 0; i < thread_count; ++i) {
-            auto test_worker = [&, i]() {
-                int cpu_id = i % config.cpu_threads;
-                set_ultra_thread_affinity(cpu_id);
-                
-                // Minimal buffers
-                unsigned char seed[32];
-                unsigned char pubkey[32];
-                unsigned char privkey[64];
-                
-                uint64_t local_keys = 0;
-                auto end_time = start + std::chrono::seconds(TEST_DURATION);
-                
-                while (std::chrono::steady_clock::now() < end_time) {
-                    for (size_t j = 0; j < TEST_BATCH; ++j) {
-                        secure_ed25519_keypair(pubkey, privkey);
-                    }
-                    local_keys += TEST_BATCH;
-                }
-                
-                total_keys.fetch_add(local_keys);
-            };
-            
-            threads.emplace_back(test_worker);
-        }
-        
-        for (auto& t : threads) {
-            t.join();
-        }
-        
-        auto end = std::chrono::steady_clock::now();
-        std::chrono::duration<double> elapsed = end - start;
-        
-        double keys_per_sec = total_keys.load() / elapsed.count();
-        
-        std::cout << "  " << thread_count << " threads: " << std::fixed << std::setprecision(0) 
-                  << keys_per_sec << " keys/sec" << std::endl;
-    }
-    
-    return 0.0; // Return value not used for this test
 }
 
 // Main function
@@ -656,10 +467,8 @@ int main(int argc, char* argv[]) {
     // Check NUMA support
     bool numa_supported = (numa_available() >= 0);
     
-    std::cout << "🚀 MCKeySearcher - SECURE-ULTRA Ed25519 Key Searcher" << std::endl;
-    std::cout << "🎯 Target: Sustained 2M+ keys/sec performance" << std::endl;
-    std::cout << "🔥 OpenSSL-based secure Ed25519 optimized for Intel Xeon Gold 5220 (Cascade Lake) with " << (avx512_supported ? "AVX-512" : "AVX2") << "\n";
-    std::cout << "🏗️  NUMA support: " << (numa_supported ? "Available" : "Not available") << "\n";
+    std::cout << "🚀 MCKeySearcher - Ed25519 Key Searcher" << std::endl;
+    std::cout << "🔥 OpenSSL-based secure Ed25519 optimized for Intel Xeon Gold 5220 (Cascade Lake)" << std::endl;
     std::cout << "⚡ Cryptographically secure with SHA-NI optimization and AVX-512\n\n";
     
     // Get prefix
@@ -733,29 +542,12 @@ int main(int argc, char* argv[]) {
     unsigned int total_cores = std::thread::hardware_concurrency();
     config.cpu_threads = 36; // TEST: Use only one socket to isolate memory bandwidth
     
-    std::cout << "\n🚀 SECURE-ULTRA Configuration:\n";
-    std::cout << "Total CPU cores: " << total_cores << " (36 per socket)\n";
-    std::cout << "CPU threads to use: " << config.cpu_threads << " (all cores)\n";
-    std::cout << "NUMA-aware: " << (config.numa_aware && numa_supported ? "Yes" : "No") << " (2 nodes)\n";
-    std::cout << "NUMA support: " << (numa_supported ? "Available" : "Not available") << "\n";
-    std::cout << "AVX-512: " << (avx512_supported ? "Yes" : "No") << "\n";
-    std::cout << "Batch size: " << config.batch_size << " (secure-optimized for sustained performance)\n";
-    std::cout << "Cryptography: OpenSSL-based secure Ed25519 with SHA-NI optimization\n";
-    std::cout << "Cache-line alignment: 64-byte aligned buffers\n";
-    std::cout << "Prefetching: Ultra-aggressive (2-3 cache lines ahead)\n";
-    std::cout << "Thread affinity: L3 cache-aware placement\n\n";
+    std::cout << "\n🚀 Configuration:\n";
+    std::cout << "CPU threads: " << config.cpu_threads << " | NUMA: " << (numa_supported ? "Yes" : "No") << " | AVX-512: " << (avx512_supported ? "Yes" : "No") << "\n";
+    std::cout << "Batch size: " << config.batch_size << " | OpenSSL Ed25519 with SHA-NI\n\n";
     
-    // Measure ultra-optimized performance
-    double keys_per_sec = measure_ultra_performance(config);
-    
-    // Measure cache performance for diagnostics
-    double cache_perf = measure_cache_performance(config);
-    
-    // Measure crypto performance for diagnostics
-    double crypto_perf = measure_crypto_performance(config);
-
-    // Measure thread scaling
-    measure_thread_scaling(config);
+    // Measure performance
+    double keys_per_sec = measure_performance(config);
     
     // Calculate expected time
     size_t prefix_len = prefix.length() / 2;
@@ -774,24 +566,17 @@ int main(int argc, char* argv[]) {
     }
     std::cout << std::endl;
     
-    // Start secure-ultra search
-    std::cout << "\n🚀 Starting SECURE-ULTRA search targeting sustained 2M+ keys/sec...\n";
-    std::cout << "Found keys will be saved to found_keys.txt\n";
-    if (numa_supported) {
-        std::cout << "Note: Some 'mbind: Invalid argument' warnings are normal in VMware environments\n";
-        std::cout << "These warnings occur because VMware restricts low-level NUMA operations\n";
-        std::cout << "The program will continue to work optimally despite these warnings\n\n";
-    } else {
-        std::cout << "Note: Running without NUMA optimization (normal in some VM environments)\n\n";
-    }
+    // Start search
+    std::cout << "\n🚀 Starting search...\n";
+    std::cout << "Found keys will be saved to found_keys.txt\n\n";
     
     std::vector<std::thread> threads;
     
-    // Start ultra-optimized CPU workers
+    // Start CPU workers
     for (int i = 0; i < config.cpu_threads; ++i) {
         threads.emplace_back(ultra_cpu_worker, std::ref(config), i, i);
-        std::cout << "Started SECURE-ULTRA worker " << i << " on core " << i << " (NUMA " << get_numa_node(i) << ")\n";
     }
+    std::cout << "Started " << config.cpu_threads << " workers\n";
     
     // Monitor progress with performance tracking
     uint64_t last_attempts = 0;
@@ -836,12 +621,9 @@ int main(int argc, char* argv[]) {
         t.join();
     }
     
-    std::cout << "\n\n🚀 SECURE-ULTRA search completed!" << std::endl;
+    std::cout << "\n\n🚀 Search completed!" << std::endl;
     std::cout << "Found " << keys_found.load() << " keys." << std::endl;
     std::cout << "Peak performance: " << std::fixed << std::setprecision(0) << peak_performance << " keys/sec" << std::endl;
-    if (peak_performance >= 2000000) {
-        std::cout << "🎯 SUSTAINED 2M+ PERFORMANCE TARGET ACHIEVED!" << std::endl;
-    }
     std::cout << "Keys saved to found_keys.txt" << std::endl;
     
     // Cleanup OpenSSL
