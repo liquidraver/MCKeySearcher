@@ -31,25 +31,20 @@ bool has_sha_ni() {
 
 // Intel SHA-NI optimized SHA-512 (fastest available)
 void sha512_sha_ni(const uint8_t* input, size_t len, uint8_t* output) {
-    // Use OpenSSL with SHA-NI optimization
-    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
-    if (ctx) {
-        EVP_DigestInit_ex(ctx, EVP_sha512(), NULL);
-        EVP_DigestUpdate(ctx, input, len);
-        unsigned int out_len;
-        EVP_DigestFinal_ex(ctx, output, &out_len);
-        EVP_MD_CTX_free(ctx);
-    }
+    // Use direct SHA-512 functions for maximum performance
+    SHA512_CTX ctx;
+    SHA512_Init(&ctx);
+    SHA512_Update(&ctx, input, len);
+    SHA512_Final(output, &ctx);
 }
 
 // OpenSSL SHA-512 fallback
 void sha512_openssl(const uint8_t* input, size_t len, uint8_t* output) {
-    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
-    EVP_DigestInit_ex(ctx, EVP_sha512(), NULL);
-    EVP_DigestUpdate(ctx, input, len);
-    unsigned int out_len;
-    EVP_DigestFinal_ex(ctx, output, &out_len);
-    EVP_MD_CTX_free(ctx);
+    // Use direct SHA-512 functions for maximum performance
+    SHA512_CTX ctx;
+    SHA512_Init(&ctx);
+    SHA512_Update(&ctx, input, len);
+    SHA512_Final(output, &ctx);
 }
 
 // Fastest available SHA-512 implementation
