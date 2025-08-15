@@ -13,7 +13,7 @@
 #include <pthread.h>
 #include <numa.h>
 #include <immintrin.h>
-#include <hwloc.h>
+// hwloc.h not needed for our optimizations
 
 // Ultra-optimized configuration for Intel Xeon Gold 5220
 struct Config {
