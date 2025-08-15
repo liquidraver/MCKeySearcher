@@ -50,11 +50,21 @@ profile: $(TARGET)
 
 # Profile-guided optimization build
 pgo: CXX_FLAGS += -fprofile-use -fprofile-correction
-pgo: clean $(TARGET)
+pgo: $(TARGET)
 
-# Force PGO rebuild (when profile data exists)
-pgo-force: clean
+# Force PGO rebuild (when profile data exists, without cleaning)
+pgo-force:
 	$(CXX) $(CXX_FLAGS) -fprofile-use -fprofile-correction $(SRC) $(LIBS) -o $(TARGET)
+
+# Check if profile data exists
+check-profile:
+	@echo "Checking for profile data..."
+	@if [ -f "mckeysearcher_server-main_server_optimized.gcda" ]; then \
+		echo "✅ Profile data found: mckeysearcher_server-main_server_optimized.gcda"; \
+		echo "   Size: $(shell ls -lh mckeysearcher_server-main_server_optimized.gcda | awk '{print $$5}')"; \
+	else \
+		echo "❌ No profile data found. Run 'make profile' first, then run the program."; \
+	fi
 
 # Debug build
 debug: CXX_FLAGS = -std=c++17 -g -O0 -pthread -DDEBUG
@@ -82,4 +92,4 @@ monitor:
 	@echo "Press Ctrl+C to stop"
 	@watch -n 1 'echo "=== $(date) ==="; echo "CPU Usage:"; top -bn1 | grep "Cpu(s)" | awk "{print \$2}"; echo "Memory Usage:"; free -h | grep Mem; echo "NUMA Stats:"; numactl --hardware | grep -E "(node|size)"'
 
-.PHONY: all clean install-deps perf pgo pgo-force debug quick numa check-system monitor
+.PHONY: all clean install-deps perf pgo pgo-force check-profile debug quick numa check-system monitor
