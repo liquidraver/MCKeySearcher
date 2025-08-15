@@ -81,15 +81,18 @@ inline void to_hex_fast_avx512(const unsigned char* data, size_t len, std::strin
         // Adjust for A-F range using simple arithmetic
         // For values > 9, we need to add 7 to get A-F (65-70 instead of 48-57)
         __m512i nine = _mm512_set1_epi8(9);
-        __m512i high_gt_nine = _mm512_cmpgt_epi8(high, nine);
-        __m512i low_gt_nine = _mm512_cmpgt_epi8(low, nine);
         
-        // Convert comparison result to adjustment values (0 or 7)
-        __m512i high_adjust = _mm512_and_si512(high_gt_nine, _mm512_set1_epi8(7));
-        __m512i low_adjust = _mm512_and_si512(low_gt_nine, _mm512_set1_epi8(7));
-        
-        high_hex = _mm512_add_epi8(high_hex, high_adjust);
-        low_hex = _mm512_add_epi8(low_hex, low_adjust);
+        // Use simple comparison and arithmetic instead of complex intrinsics
+        for (int j = 0; j < 64; ++j) {
+            unsigned char high_val = ((unsigned char*)&high)[j];
+            unsigned char low_val = ((unsigned char*)&low)[j];
+            
+            if (high_val > 9) high_val += 7;
+            if (low_val > 9) low_val += 7;
+            
+            ((unsigned char*)&high_hex)[j] = high_val;
+            ((unsigned char*)&low_hex)[j] = low_val;
+        }
         
         // Interleave high and low nibbles
         __m512i result = _mm512_unpacklo_epi8(high_hex, low_hex);
@@ -149,7 +152,16 @@ inline bool check_prefix_avx512(const unsigned char* data, const std::string& pr
             
             // Use simple comparison - check if any bytes don't match
             __m512i diff = _mm512_xor_si512(expected, actual);
-            if (!_mm512_testz_si512(diff, diff)) {
+            
+            // Check if any bytes are non-zero (simple byte-by-byte check)
+            bool any_diff = false;
+            for (int j = 0; j < 64; ++j) {
+                if (((unsigned char*)&diff)[j] != 0) {
+                    any_diff = true;
+                    break;
+                }
+            }
+            if (any_diff) {
                 return false;
             }
         }
