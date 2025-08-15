@@ -14,11 +14,9 @@ NVCC_FLAGS = -arch=sm_61 -O3 -Xcompiler -O3 -std=c++14 \
              -use_fast_math -maxrregcount=32 \
              -Xptxas -O3,-v
 
-CXX_FLAGS = -std=c++17 -O3 -march=cascadelake -mtune=cascadelake \
+CXX_FLAGS = -std=c++17 -O3 -march=native -mtune=native \
             -fomit-frame-pointer -pthread -DNDEBUG \
             -funroll-loops -fprefetch-loop-arrays \
-            -mavx512f -mavx512dq -mavx512bw -mavx512vl -mavx512cd \
-            -mfma -mbmi2 \
             -flto -fwhole-program -fuse-linker-plugin \
             -fno-stack-protector -fno-asynchronous-unwind-tables \
             -fno-unwind-tables -fno-ident
@@ -78,7 +76,7 @@ perf: CXX_FLAGS += -DNDEBUG
 perf: $(TARGET)
 
 # Server-optimized build (maximum CPU optimization)
-server: CXX_FLAGS += -DNDEBUG -march=native -mtune=native
+server: CXX_FLAGS += -DNDEBUG
 server: $(TARGET)
 
 # Debug build

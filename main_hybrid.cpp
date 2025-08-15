@@ -9,12 +9,13 @@
 #include <chrono>
 #include <string>
 #include <cstring>
-#include <cmath>
+
 #include <cuda_runtime.h>
 #include <curand_kernel.h>
 #include <pthread.h>
 #include <numa.h>
 #include <immintrin.h>
+#include <cpuid.h>
 
 // CUDA error checking macro
 #define CUDA_CHECK(call) do { \
@@ -148,6 +149,62 @@ int get_numa_node(int cpu_id) {
         return numa_node_of_cpu(cpu_id);
     }
     return 0;
+}
+
+// CPU capability detection
+struct CPUFeatures {
+    bool avx2 = false;
+    bool avx512f = false;
+    bool avx512dq = false;
+    bool avx512bw = false;
+    bool avx512vl = false;
+    bool avx512cd = false;
+    bool fma = false;
+    bool bmi2 = false;
+};
+
+CPUFeatures detect_cpu_features() {
+    CPUFeatures features;
+    
+    unsigned int eax, ebx, ecx, edx;
+    
+    // Check for AVX2 and FMA
+    if (__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx)) {
+        features.avx2 = (ebx & (1 << 5)) != 0;
+        features.fma = (ebx & (1 << 12)) != 0;
+        features.bmi2 = (ebx & (1 << 8)) != 0;
+        features.avx512f = (ebx & (1 << 16)) != 0;
+        features.avx512dq = (ebx & (1 << 17)) != 0;
+        features.avx512bw = (ebx & (1 << 30)) != 0;
+        features.avx512vl = (ebx & (1 << 31)) != 0;
+        features.avx512cd = (ecx & (1 << 28)) != 0;
+    }
+    
+    return features;
+}
+
+// Get compiler flags based on CPU capabilities
+std::string get_compiler_flags(const CPUFeatures& features) {
+    std::string flags = "-std=c++17 -O3 -fomit-frame-pointer -pthread -DNDEBUG";
+    
+    if (features.avx2) {
+        flags += " -mavx2";
+    }
+    
+    if (features.avx512f && features.avx512dq && features.avx512bw && 
+        features.avx512vl && features.avx512cd) {
+        flags += " -mavx512f -mavx512dq -mavx512bw -mavx512vl -mavx512cd";
+    }
+    
+    if (features.fma) {
+        flags += " -mfma";
+    }
+    
+    if (features.bmi2) {
+        flags += " -mbmi2";
+    }
+    
+    return flags;
 }
 
 // Print status
@@ -357,115 +414,7 @@ void cpu_worker(const Config& config, int thread_id, int cpu_id) {
 // Function declarations for CUDA functions
 extern "C" void init_ed25519_constants();
 
-// Performance test for both CPU and GPU
-struct PerformanceResults {
-    double cpu_keys_per_sec = 0;
-    double gpu_keys_per_sec = 0;
-    double total_keys_per_sec = 0;
-};
 
-PerformanceResults measure_hybrid_performance() {
-    std::cout << "\nRunning hybrid performance test (5 seconds)..." << std::endl;
-    
-    const size_t TEST_BATCH = 32768;
-    const int TEST_DURATION = 5;
-    
-    std::atomic<uint64_t> total_keys(0);
-    std::vector<std::thread> threads;
-    
-    auto start = std::chrono::steady_clock::now();
-    
-    // Test GPU performance
-    if (true) { // Always test GPU for now
-        auto gpu_test_worker = [&]() {
-            curandState* d_states;
-            unsigned char *d_seeds, *d_pubkeys, *d_privkeys;
-            
-            CUDA_CHECK(cudaMalloc(&d_states, TEST_BATCH * sizeof(curandState)));
-            CUDA_CHECK(cudaMalloc(&d_seeds, TEST_BATCH * 32));
-            CUDA_CHECK(cudaMalloc(&d_pubkeys, TEST_BATCH * 32));
-            CUDA_CHECK(cudaMalloc(&d_privkeys, TEST_BATCH * 64));
-            
-            curandState* h_states = new curandState[TEST_BATCH];
-            for (size_t i = 0; i < TEST_BATCH; ++i) {
-                curand_init(1234 + i, 0, 0, &h_states[i]);
-            }
-            CUDA_CHECK(cudaMemcpy(d_states, h_states, TEST_BATCH * sizeof(curandState), cudaMemcpyHostToDevice));
-            delete[] h_states;
-            
-            int block_size = 256;
-            int grid_size = (TEST_BATCH + block_size - 1) / block_size;
-            
-            uint64_t local_keys = 0;
-            auto end_time = start + std::chrono::seconds(TEST_DURATION);
-            
-            while (std::chrono::steady_clock::now() < end_time) {
-                CUDA_CHECK(call_generate_ed25519_keys_kernel(
-                    d_states, (uint8_t*)d_seeds, (uint8_t*)d_pubkeys, (uint8_t*)d_privkeys,
-                    TEST_BATCH, block_size, grid_size
-                ));
-                CUDA_CHECK(cudaDeviceSynchronize());
-                local_keys += TEST_BATCH;
-            }
-            
-            total_keys.fetch_add(local_keys);
-            
-            CUDA_CHECK(cudaFree(d_states));
-            CUDA_CHECK(cudaFree(d_seeds));
-            CUDA_CHECK(cudaFree(d_pubkeys));
-            CUDA_CHECK(cudaFree(d_privkeys));
-        };
-        
-        threads.emplace_back(gpu_test_worker);
-    }
-    
-    // Test CPU performance
-    if (true) { // Always test CPU for now
-        auto cpu_test_worker = [&]() {
-            std::vector<unsigned char> seeds(TEST_BATCH * 32);
-            std::vector<unsigned char> pubkeys(TEST_BATCH * 32);
-            std::vector<unsigned char> privkeys(TEST_BATCH * 64);
-            
-            uint64_t local_keys = 0;
-            auto end_time = start + std::chrono::seconds(TEST_DURATION);
-            
-            while (std::chrono::steady_clock::now() < end_time) {
-                for (size_t i = 0; i < TEST_BATCH; ++i) {
-                    randombytes_buf(&seeds[i * 32], 32);
-                    crypto_sign_ed25519_keypair(&pubkeys[i * 32], &privkeys[i * 64]);
-                }
-                local_keys += TEST_BATCH;
-            }
-            
-            total_keys.fetch_add(local_keys);
-        };
-        
-        threads.emplace_back(cpu_test_worker);
-    }
-    
-    for (auto& t : threads) {
-        t.join();
-    }
-    
-    auto end = std::chrono::steady_clock::now();
-    std::chrono::duration<double> elapsed = end - start;
-    
-    PerformanceResults results;
-    results.total_keys_per_sec = total_keys.load() / elapsed.count();
-    
-    // Estimate individual performance (this is approximate)
-    results.gpu_keys_per_sec = results.total_keys_per_sec * 0.7; // GPU typically 70% of total
-    results.cpu_keys_per_sec = results.total_keys_per_sec * 0.3; // CPU typically 30% of total
-    
-    std::cout << "Hybrid Performance: " << std::fixed << std::setprecision(0) 
-              << results.total_keys_per_sec << " keys/sec total" << std::endl;
-    std::cout << "Estimated GPU: " << std::fixed << std::setprecision(0) 
-              << results.gpu_keys_per_sec << " keys/sec" << std::endl;
-    std::cout << "Estimated CPU: " << std::fixed << std::setprecision(0) 
-              << results.cpu_keys_per_sec << " keys/sec" << std::endl;
-    
-    return results;
-}
 
 // Main function
 int main(int argc, char* argv[]) {
@@ -475,25 +424,50 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
-    // Initialize CUDA
-    CUDA_CHECK(cudaSetDevice(0));
+    // Detect CPU capabilities
+    CPUFeatures cpu_features = detect_cpu_features();
+    std::cout << "🔍 MCKeySearcher - Ed25519 Key Searcher\n";
+    std::cout << "CPU Features:\n";
+    std::cout << "  AVX2: " << (cpu_features.avx2 ? "✅" : "❌") << "\n";
+    std::cout << "  AVX-512: " << (cpu_features.avx512f ? "✅" : "❌") << "\n";
+    std::cout << "  FMA: " << (cpu_features.fma ? "✅" : "❌") << "\n";
+    std::cout << "  BMI2: " << (cpu_features.bmi2 ? "✅" : "❌") << "\n\n";
     
-    // Initialize Ed25519 constants
-    init_ed25519_constants();
+    // Try to initialize CUDA, fall back to CPU-only if it fails
+    bool cuda_available = false;
+    cudaDeviceProp prop;
+    int device_count = 0;
     
-    int device_count;
-    CUDA_CHECK(cudaGetDeviceCount(&device_count));
-    if (device_count == 0) {
-        std::cerr << "No CUDA devices found!" << std::endl;
-        return 1;
+    try {
+        cudaError_t err = cudaSetDevice(0);
+        if (err == cudaSuccess) {
+            err = cudaGetDeviceCount(&device_count);
+            if (err == cudaSuccess && device_count > 0) {
+                err = cudaGetDeviceProperties(&prop, 0);
+                if (err == cudaSuccess) {
+                    // Try to initialize Ed25519 constants
+                    try {
+                        init_ed25519_constants();
+                        cuda_available = true;
+                    } catch (...) {
+                        cuda_available = false;
+                    }
+                }
+            }
+        }
+    } catch (...) {
+        cuda_available = false;
     }
     
-    cudaDeviceProp prop;
-    CUDA_CHECK(cudaGetDeviceProperties(&prop, 0));
-    std::cout << "🔍 MCKeySearcher - Hybrid CPU+GPU Ed25519 Key Searcher\n";
-    std::cout << "🚀 Using GPU: " << prop.name << "\n";
-    std::cout << "   Compute Capability: " << prop.major << "." << prop.minor << "\n";
-    std::cout << "   Memory: " << (prop.totalGlobalMem / (1024*1024*1024)) << " GB\n\n";
+    if (cuda_available) {
+        std::cout << "🔍 MCKeySearcher - Hybrid CPU+GPU Ed25519 Key Searcher\n";
+        std::cout << "🚀 Using GPU: " << prop.name << "\n";
+        std::cout << "   Compute Capability: " << prop.major << "." << prop.minor << "\n";
+        std::cout << "   Memory: " << (prop.totalGlobalMem / (1024*1024*1024)) << " GB\n\n";
+    } else {
+        std::cout << "🔍 MCKeySearcher - CPU-Only Ed25519 Key Searcher\n";
+        std::cout << "⚠️  CUDA not available, running in CPU-only mode\n\n";
+    }
     
     // Get prefix
     std::string prefix;
@@ -590,7 +564,15 @@ int main(int argc, char* argv[]) {
     std::cout << "\nSystem Info:\n";
     std::cout << "Total CPU cores: " << total_cores << "\n";
     std::cout << "CPU threads to use: " << config.cpu_threads << " (1 core reserved for OS)\n";
-    std::cout << "Search mode: ";
+    std::cout << "CPU Architecture: ";
+    if (cpu_features.avx512f) {
+        std::cout << "AVX-512 (Server-grade)";
+    } else if (cpu_features.avx2) {
+        std::cout << "AVX2 (Modern Desktop)";
+    } else {
+        std::cout << "Basic x86-64";
+    }
+    std::cout << "\nSearch mode: ";
     if (config.search_mode == 1) {
         std::cout << "Prefix only (" << config.prefix << ")";
     } else if (config.search_mode == 2) {
@@ -598,36 +580,25 @@ int main(int argc, char* argv[]) {
     } else {
         std::cout << "Prefix + Suffix (" << config.prefix << " + " << config.suffix << ")";
     }
-    std::cout << "\nGPU: " << prop.name << "\n\n";
-    
-    // Measure hybrid performance
-    PerformanceResults perf = measure_hybrid_performance();
-    
-    // Calculate expected time
-    size_t prefix_len = prefix.length() / 2;
-    double combinations = pow(16.0, prefix_len);
-    double expected_time = combinations / perf.total_keys_per_sec;
-    
-    std::cout << "\nExpected time for prefix '" << prefix << "': ";
-    if (expected_time < 60) {
-        std::cout << std::fixed << std::setprecision(1) << expected_time << " seconds";
-    } else if (expected_time < 3600) {
-        std::cout << std::fixed << std::setprecision(1) << (expected_time / 60) << " minutes";
-    } else if (expected_time < 86400) {
-        std::cout << std::fixed << std::setprecision(1) << (expected_time / 3600) << " hours";
+    if (cuda_available) {
+        std::cout << "\nGPU: " << prop.name << "\n";
     } else {
-        std::cout << std::fixed << std::setprecision(1) << (expected_time / 86400) << " days";
+        std::cout << "\nGPU: Not available (CPU-only mode)\n";
     }
-    std::cout << std::endl;
+    std::cout << "\n";
     
-    // Start hybrid search
-    std::cout << "\nStarting hybrid CPU+GPU search...\n";
+    // Start search
+    if (cuda_available) {
+        std::cout << "\nStarting hybrid CPU+GPU search...\n";
+    } else {
+        std::cout << "\nStarting CPU-only search...\n";
+    }
     std::cout << "Found keys will be saved to found_keys.txt\n\n";
     
     std::vector<std::thread> threads;
     
-    // Start GPU worker
-    if (config.use_gpu) {
+    // Start GPU worker only if CUDA is available
+    if (cuda_available && config.use_gpu) {
         threads.emplace_back(gpu_worker, std::ref(config), 0);
         std::cout << "Started GPU worker thread\n";
     }
