@@ -1,9 +1,19 @@
 # Hybrid CPU+GPU Ed25519 Key Searcher Makefile
 
-# Compiler
+# Compilers
+NVCC = nvcc
 CXX = g++
 
+# CUDA paths (adjust for your system)
+CUDA_PATH ?= /usr/local/cuda
+CUDA_INC = $(CUDA_PATH)/include
+CUDA_LIB = $(CUDA_PATH)/lib64
+
 # Compiler flags
+NVCC_FLAGS = -arch=sm_61 -O3 -Xcompiler -O3 -std=c++14 \
+             -use_fast_math -maxrregcount=32 \
+             -Xptxas -O3,-v
+
 CXX_FLAGS = -std=c++17 -O3 -march=cascadelake -mtune=cascadelake \
             -fomit-frame-pointer -pthread -DNDEBUG \
             -funroll-loops -fprefetch-loop-arrays \
@@ -14,7 +24,10 @@ CXX_FLAGS = -std=c++17 -O3 -march=cascadelake -mtune=cascadelake \
             -fno-unwind-tables -fno-ident
 
 # Libraries
-LIBS = -lsodium -lpthread -lnuma
+LIBS = -L$(CUDA_LIB) -lcudart -lcurand -lsodium -lpthread -lnuma
+
+# Include paths
+INCLUDES = -I$(CUDA_INC)
 
 # Source files
 CPP_SRC = main_hybrid.cpp
@@ -32,7 +45,7 @@ $(TARGET): $(OBJ_FILES)
 
 # Compile C++ source
 main_hybrid.o: $(CPP_SRC)
-	$(CXX) $(CXX_FLAGS) -c $< -o $@
+	$(CXX) $(CXX_FLAGS) $(INCLUDES) -c $< -o $@
 
 # Clean build files
 clean:
@@ -43,8 +56,16 @@ install-deps:
 	sudo apt update
 	sudo apt install -y build-essential g++ make
 	sudo apt install -y libsodium-dev libnuma-dev
+	# CUDA toolkit should be installed separately
+
+# Check CUDA installation
+check-cuda:
+	@echo "Checking CUDA installation..."
+	@nvcc --version || echo "CUDA not found. Please install CUDA toolkit."
+	@nvidia-smi || echo "NVIDIA driver not found."
 
 # Performance build (maximum optimization)
+perf: NVCC_FLAGS += -DNDEBUG -Xcompiler -DNDEBUG
 perf: CXX_FLAGS += -DNDEBUG
 perf: $(TARGET)
 
@@ -53,16 +74,19 @@ server: CXX_FLAGS += -DNDEBUG -march=native -mtune=native
 server: $(TARGET)
 
 # Debug build
+debug: NVCC_FLAGS += -g -G -O0
 debug: CXX_FLAGS += -g -O0
 debug: $(TARGET)
 
 # Profile build
+profile: NVCC_FLAGS += -pg -G
 profile: CXX_FLAGS += -pg
 profile: $(TARGET)
 
 # Quick test build (minimal optimization for faster compilation)
+quick: NVCC_FLAGS = -arch=sm_61 -O1 -std=c++14
 quick: CXX_FLAGS = -std=c++17 -O1 -pthread
 quick: $(TARGET)
 
-.PHONY: all clean install-deps perf server debug profile quick
+.PHONY: all clean install-deps check-cuda perf server debug profile quick
 
