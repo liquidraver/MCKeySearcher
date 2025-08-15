@@ -64,66 +64,23 @@ struct NumaBuffer {
     }
 };
 
-// AVX-512 optimized hex conversion (64 bytes at once) - Cascade Lake compatible
+// Simple, reliable hex conversion that definitely works
 inline void to_hex_fast_avx512(const unsigned char* data, size_t len, std::string& out) {
     out.resize(len * 2);
     
-    // Process 64 bytes at a time with AVX-512
-    size_t i = 0;
-    for (; i + 64 <= len; i += 64) {
-        __m512i bytes = _mm512_loadu_si512(&data[i]);
-        
-        // Extract high nibbles (bits 4-7)
-        __m512i high = _mm512_srli_epi64(bytes, 4);
-        high = _mm512_and_si512(high, _mm512_set1_epi8(0x0F));
-        
-        // Extract low nibbles (bits 0-3)
-        __m512i low = _mm512_and_si512(bytes, _mm512_set1_epi8(0x0F));
-        
-        // Convert to hex characters
-        __m512i high_hex = _mm512_add_epi8(high, _mm512_set1_epi8('0'));
-        __m512i low_hex = _mm512_add_epi8(low, _mm512_set1_epi8('0'));
-        
-        // Adjust for A-F range using simple arithmetic
-        // For values > 9, we need to add 7 to get A-F (65-70 instead of 48-57)
-        
-        // Use simple comparison and arithmetic instead of complex intrinsics
-        for (int j = 0; j < 64; ++j) {
-            unsigned char high_val = ((unsigned char*)&high)[j];
-            unsigned char low_val = ((unsigned char*)&low)[j];
-            
-            if (high_val > 9) high_val += 7;
-            if (low_val > 9) low_val += 7;
-            
-            ((unsigned char*)&high_hex)[j] = high_val;
-            ((unsigned char*)&low_hex)[j] = low_val;
-        }
-        
-        // Store high and low nibbles in correct order
-        for (int j = 0; j < 64; ++j) {
-            out[i * 2 + j * 2] = ((unsigned char*)&high_hex)[j];
-            out[i * 2 + j * 2 + 1] = ((unsigned char*)&low_hex)[j];
-        }
-    }
-    
-    // Handle remaining bytes with standard method
-    for (; i < len; ++i) {
+    // Use simple, reliable byte-by-byte conversion
+    for (size_t i = 0; i < len; ++i) {
         unsigned char high = (data[i] >> 4) & 0x0F;
         unsigned char low = data[i] & 0x0F;
+        
         out[2 * i] = (high < 10) ? (high + '0') : (high - 10 + 'A');
         out[2 * i + 1] = (low < 10) ? (low + '0') : (low - 10 + 'A');
     }
 }
 
-// Fallback hex conversion for non-AVX-512
+// Fallback hex conversion for non-AVX-512 (same as AVX-512 version for consistency)
 inline void to_hex_fast_fallback(const unsigned char* data, size_t len, std::string& out) {
-    out.resize(len * 2);
-    for (size_t i = 0; i < len; ++i) {
-        unsigned char high = (data[i] >> 4) & 0x0F;
-        unsigned char low = data[i] & 0x0F;
-        out[2 * i] = (high < 10) ? (high + '0') : (high - 10 + 'A');
-        out[2 * i + 1] = (low < 10) ? (low + '0') : (low - 10 + 'A');
-    }
+    to_hex_fast_avx512(data, len, out); // Use the same reliable function
 }
 
 // Choose optimal hex conversion method
@@ -327,6 +284,14 @@ void server_cpu_worker(const Config& config, int thread_id, int cpu_id) {
             if (match) {
                 to_hex_fast(&buffers.privkeys[i * 64], 64, priv_hex);
                 to_hex_fast(&buffers.pubkeys[i * 32], 32, pub_hex);
+                
+                // Debug: Print first few bytes of private key
+                std::cout << "\nDEBUG: First 8 bytes of private key: ";
+                for (int j = 0; j < 8; j++) {
+                    printf("%02X ", buffers.privkeys[i * 64 + j]);
+                }
+                std::cout << std::endl;
+                std::cout << "DEBUG: Hex conversion result: " << priv_hex.substr(0, 16) << "..." << std::endl;
                 
                 log_key(priv_hex, pub_hex, match_type);
                 
