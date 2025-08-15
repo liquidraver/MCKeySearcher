@@ -32,7 +32,7 @@ $(TARGET): $(SRC)
 
 # Clean build files
 clean:
-	rm -f $(TARGET) *.o
+	rm -f $(TARGET) *.o *.gcda *.gcno *.profdata
 
 # Install dependencies (Ubuntu/Debian)
 install-deps:
@@ -42,8 +42,11 @@ install-deps:
 
 # Performance build (maximum server optimization)
 perf: CXX_FLAGS += -DNDEBUG -march=native -mtune=native
-perf: CXX_FLAGS += -fprofile-generate
 perf: $(TARGET)
+
+# Profile generation build (for PGO)
+profile: CXX_FLAGS += -fprofile-generate
+profile: $(TARGET)
 
 # Profile-guided optimization build
 pgo: CXX_FLAGS += -fprofile-use -fprofile-correction
