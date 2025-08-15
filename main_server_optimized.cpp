@@ -58,7 +58,7 @@ struct NumaBuffer {
     }
 };
 
-// AVX-512 optimized hex conversion (64 bytes at once)
+// AVX-512 optimized hex conversion (64 bytes at once) - Cascade Lake compatible
 inline void to_hex_fast_avx512(const unsigned char* data, size_t len, std::string& out) {
     out.resize(len * 2);
     
@@ -78,14 +78,15 @@ inline void to_hex_fast_avx512(const unsigned char* data, size_t len, std::strin
         __m512i high_hex = _mm512_add_epi8(high, _mm512_set1_epi8('0'));
         __m512i low_hex = _mm512_add_epi8(low, _mm512_set1_epi8('0'));
         
-        // Adjust for A-F range using comparison and blend
+        // Adjust for A-F range using simple arithmetic
+        // For values > 9, we need to add 7 to get A-F (65-70 instead of 48-57)
         __m512i nine = _mm512_set1_epi8(9);
         __m512i high_gt_nine = _mm512_cmpgt_epi8(high, nine);
         __m512i low_gt_nine = _mm512_cmpgt_epi8(low, nine);
         
-        // Add adjustment for A-F (A = 65, 0 = 48, so adjustment is 7)
-        __m512i high_adjust = _mm512_mask_blend_epi8(high_gt_nine, _mm512_set1_epi8(0), _mm512_set1_epi8(7));
-        __m512i low_adjust = _mm512_mask_blend_epi8(low_gt_nine, _mm512_set1_epi8(0), _mm512_set1_epi8(7));
+        // Convert comparison result to adjustment values (0 or 7)
+        __m512i high_adjust = _mm512_and_si512(high_gt_nine, _mm512_set1_epi8(7));
+        __m512i low_adjust = _mm512_and_si512(low_gt_nine, _mm512_set1_epi8(7));
         
         high_hex = _mm512_add_epi8(high_hex, high_adjust);
         low_hex = _mm512_add_epi8(low_hex, low_adjust);
@@ -145,10 +146,10 @@ inline bool check_prefix_avx512(const unsigned char* data, const std::string& pr
         for (; i + 64 <= prefix_len; i += 64) {
             __m512i expected = _mm512_loadu_si512(&expected_bytes[i]);
             __m512i actual = _mm512_loadu_si512(&data[i]);
-            __mmask64 mask = _mm512_cmpeq_epi8_mask(expected, actual);
             
-            // Check if all 64 bytes match
-            if (_cvtmask64_u64(mask) != 0xFFFFFFFFFFFFFFFFULL) {
+            // Use simple comparison - check if any bytes don't match
+            __m512i diff = _mm512_xor_si512(expected, actual);
+            if (!_mm512_testz_si512(diff, diff)) {
                 return false;
             }
         }
@@ -380,8 +381,8 @@ int main(int argc, char* argv[]) {
     avx512_supported = true;
     #endif
     
-    std::cout << "🔍 MCKeySearcher - Xeon Gold 5220 Optimized Ed25519 Key Searcher\n";
-    std::cout << "🚀 Optimized for Intel Xeon Gold 5220 with " << (avx512_supported ? "AVX-512" : "AVX2") << "\n\n";
+    std::cout << "🔍 MCKeySearcher - Xeon Gold 5220 (Cascade Lake) Optimized Ed25519 Key Searcher\n";
+    std::cout << "🚀 Optimized for Intel Xeon Gold 5220 (Cascade Lake) with " << (avx512_supported ? "AVX-512" : "AVX2") << "\n\n";
     
     // Get prefix
     std::string prefix;
@@ -454,12 +455,12 @@ int main(int argc, char* argv[]) {
     unsigned int total_cores = std::thread::hardware_concurrency();
     config.cpu_threads = total_cores; // Use ALL 72 cores
     
-    std::cout << "\nXeon Gold 5220 Configuration:\n";
+    std::cout << "\nXeon Gold 5220 (Cascade Lake) Configuration:\n";
     std::cout << "Total CPU cores: " << total_cores << " (36 per socket)\n";
     std::cout << "CPU threads to use: " << config.cpu_threads << " (all cores)\n";
     std::cout << "NUMA-aware: " << (config.numa_aware ? "Yes" : "No") << " (2 nodes)\n";
     std::cout << "AVX-512: " << (avx512_supported ? "Yes" : "No") << "\n";
-    std::cout << "Batch size: " << config.batch_size << " (optimized for AVX-512)\n\n";
+    std::cout << "Batch size: " << config.batch_size << " (optimized for Cascade Lake AVX-512)\n\n";
     
     // Measure server performance
     double keys_per_sec = measure_server_performance(config);
@@ -482,7 +483,7 @@ int main(int argc, char* argv[]) {
     std::cout << std::endl;
     
     // Start server-optimized search
-    std::cout << "\nStarting Xeon Gold 5220 optimized search...\n";
+    std::cout << "\nStarting Xeon Gold 5220 (Cascade Lake) optimized search...\n";
     std::cout << "Found keys will be saved to found_keys.txt\n\n";
     
     std::vector<std::thread> threads;

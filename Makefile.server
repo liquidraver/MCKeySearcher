@@ -5,12 +5,12 @@
 # Compiler
 CXX = g++
 
-# Compiler flags optimized for Intel Xeon Gold 5220 with AVX-512
-CXX_FLAGS = -std=c++17 -O3 -march=skylake-avx512 -mtune=skylake-avx512 \
+# Compiler flags optimized for Intel Xeon Gold 5220 (Cascade Lake) with AVX-512
+CXX_FLAGS = -std=c++17 -O3 -march=cascadelake -mtune=cascadelake \
             -fomit-frame-pointer -pthread -DNDEBUG \
             -funroll-loops -fprefetch-loop-arrays \
             -mavx512f -mavx512dq -mavx512bw -mavx512vl -mavx512cd \
-            -mfma -mbmi2 -march=skylake-avx512 \
+            -mfma -mbmi2 \
             -flto -fwhole-program -fuse-linker-plugin \
             -fno-stack-protector -fno-asynchronous-unwind-tables \
             -fno-unwind-tables -fno-ident \
