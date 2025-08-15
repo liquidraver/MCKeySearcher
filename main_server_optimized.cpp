@@ -9,7 +9,7 @@
 #include <chrono>
 #include <string>
 #include <cstring>
-#include <cmath>
+
 #include <pthread.h>
 #include <numa.h>
 #include <immintrin.h>
@@ -17,7 +17,8 @@
 // Server-optimized configuration for Intel Xeon Gold 5220
 struct Config {
     std::string prefix;
-    int search_mode = 1; // 1: prefix only, 2: prefix + suffix
+    std::string suffix;  // For suffix-only or prefix+suffix searches
+    int search_mode = 1; // 1: prefix only, 2: suffix only, 3: prefix + suffix
     int target_keys = 1;
     bool continuous = false;
     int cpu_threads = 0; // Will be set automatically
@@ -85,7 +86,6 @@ inline void to_hex_fast_avx512(const unsigned char* data, size_t len, std::strin
         
         // Adjust for A-F range using simple arithmetic
         // For values > 9, we need to add 7 to get A-F (65-70 instead of 48-57)
-        __m512i nine = _mm512_set1_epi8(9);
         
         // Use simple comparison and arithmetic instead of complex intrinsics
         for (int j = 0; j < 64; ++j) {
@@ -99,11 +99,11 @@ inline void to_hex_fast_avx512(const unsigned char* data, size_t len, std::strin
             ((unsigned char*)&low_hex)[j] = low_val;
         }
         
-        // Interleave high and low nibbles
-        __m512i result = _mm512_unpacklo_epi8(high_hex, low_hex);
-        
-        // Store result
-        _mm512_storeu_si512(&out[i * 2], result);
+        // Store high and low nibbles in correct order
+        for (int j = 0; j < 64; ++j) {
+            out[i * 2 + j * 2] = ((unsigned char*)&high_hex)[j];
+            out[i * 2 + j * 2 + 1] = ((unsigned char*)&low_hex)[j];
+        }
     }
     
     // Handle remaining bytes with standard method
@@ -204,13 +204,13 @@ inline bool check_prefix(const unsigned char* data, const std::string& prefix) {
 }
 
 // Fast suffix checking (vectorized-friendly)
-inline bool check_suffix(const unsigned char* data, const std::string& prefix) {
-    size_t prefix_len = prefix.length() / 2;
-    size_t start_byte = 32 - prefix_len;
+inline bool check_suffix(const unsigned char* data, const std::string& suffix) {
+    size_t suffix_len = suffix.length() / 2;
+    size_t start_byte = 32 - suffix_len;
     
-    for (size_t i = 0; i < prefix_len; ++i) {
-        unsigned char high = (prefix[2 * i] >= 'A') ? (prefix[2 * i] - 'A' + 10) : (prefix[2 * i] - '0');
-        unsigned char low = (prefix[2 * i + 1] >= 'A') ? (prefix[2 * i + 1] - 'A' + 10) : (prefix[2 * i + 1] - '0');
+    for (size_t i = 0; i < suffix_len; ++i) {
+        unsigned char high = (suffix[2 * i] >= 'A') ? (suffix[2 * i] - 'A' + 10) : (suffix[2 * i] - '0');
+        unsigned char low = (suffix[2 * i + 1] >= 'A') ? (suffix[2 * i + 1] - 'A' + 10) : (suffix[2 * i + 1] - '0');
         unsigned char expected = (high << 4) | low;
         if (data[start_byte + i] != expected) return false;
     }
@@ -304,17 +304,31 @@ void server_cpu_worker(const Config& config, int thread_id, int cpu_id) {
                 __builtin_prefetch(&buffers.privkeys[(i + 64) * 64], 0, 1);
             }
             
-            bool prefix_match = check_prefix(&buffers.pubkeys[i * 32], config.prefix);
+            bool match = false;
+            std::string match_type;
             
-            if (prefix_match) {
+            // Check based on search mode
+            if (config.search_mode == 1) {
+                // Prefix only
+                match = check_prefix(&buffers.pubkeys[i * 32], config.prefix);
+                if (match) match_type = "CPU-Prefix";
+            } else if (config.search_mode == 2) {
+                // Suffix only
+                match = check_suffix(&buffers.pubkeys[i * 32], config.suffix);
+                if (match) match_type = "CPU-Suffix";
+            } else if (config.search_mode == 3) {
+                // Prefix + Suffix
+                bool prefix_match = check_prefix(&buffers.pubkeys[i * 32], config.prefix);
+                bool suffix_match = check_suffix(&buffers.pubkeys[i * 32], config.suffix);
+                match = prefix_match && suffix_match;
+                if (match) match_type = "CPU-Prefix+Suffix";
+            }
+            
+            if (match) {
                 to_hex_fast(&buffers.privkeys[i * 64], 64, priv_hex);
                 to_hex_fast(&buffers.pubkeys[i * 32], 32, pub_hex);
                 
-                if (config.search_mode == 2 && check_suffix(&buffers.pubkeys[i * 32], config.prefix)) {
-                    log_key(priv_hex, pub_hex, "CPU-Prefix+Suffix");
-                } else {
-                    log_key(priv_hex, pub_hex, "CPU-Prefix");
-                }
+                log_key(priv_hex, pub_hex, match_type);
                 
                 keys_found.fetch_add(1);
                 
@@ -337,59 +351,7 @@ void server_cpu_worker(const Config& config, int thread_id, int cpu_id) {
     }
 }
 
-// Performance test optimized for Xeon Gold 5220
-double measure_server_performance(const Config& config) {
-    std::cout << "\nRunning Xeon Gold 5220 performance test (5 seconds)..." << std::endl;
-    
-    const size_t TEST_BATCH = config.batch_size;
-    const int TEST_DURATION = 5;
-    
-    std::atomic<uint64_t> total_keys(0);
-    std::vector<std::thread> threads;
-    
-    auto start = std::chrono::steady_clock::now();
-    
-    // Test with multiple threads to simulate real workload
-    int test_threads = std::min(config.cpu_threads, 24); // Test with more threads for 72-core system
-    
-    for (int i = 0; i < test_threads; ++i) {
-        auto test_worker = [&, i]() {
-            int cpu_id = i % config.cpu_threads;
-            set_thread_affinity(cpu_id);
-            
-            NumaBuffer buffers(TEST_BATCH, get_numa_node(cpu_id));
-            
-            uint64_t local_keys = 0;
-            auto end_time = start + std::chrono::seconds(TEST_DURATION);
-            
-            while (std::chrono::steady_clock::now() < end_time) {
-                for (size_t j = 0; j < TEST_BATCH; ++j) {
-                    randombytes_buf(&buffers.seeds[j * 32], 32);
-                    crypto_sign_ed25519_keypair(&buffers.pubkeys[j * 32], &buffers.privkeys[j * 64]);
-                }
-                local_keys += TEST_BATCH;
-            }
-            
-            total_keys.fetch_add(local_keys);
-        };
-        
-        threads.emplace_back(test_worker);
-    }
-    
-    for (auto& t : threads) {
-        t.join();
-    }
-    
-    auto end = std::chrono::steady_clock::now();
-    std::chrono::duration<double> elapsed = end - start;
-    
-    double keys_per_sec = total_keys.load() / elapsed.count();
-    
-    std::cout << "Xeon Gold 5220 Performance: " << std::fixed << std::setprecision(0) 
-              << keys_per_sec << " keys/sec (" << test_threads << " test threads)" << std::endl;
-    
-    return keys_per_sec;
-}
+
 
 // Main function
 int main(int argc, char* argv[]) {
@@ -441,12 +403,33 @@ int main(int argc, char* argv[]) {
     // Get search mode
     std::cout << "\nSearch mode:\n";
     std::cout << "1. Prefix only\n";
-    std::cout << "2. Prefix + Suffix\n";
-    std::cout << "Choice (1-2): ";
+    std::cout << "2. Suffix only\n";
+    std::cout << "3. Prefix + Suffix\n";
+    std::cout << "Choice (1-3): ";
     std::cin >> config.search_mode;
     
-    if (config.search_mode != 1 && config.search_mode != 2) {
+    if (config.search_mode < 1 || config.search_mode > 3) {
         config.search_mode = 1;
+    }
+    
+    // Get suffix if needed
+    if (config.search_mode == 2 || config.search_mode == 3) {
+        std::cout << "\nEnter hex suffix (e.g., BEEF, 1234): ";
+        std::cin >> config.suffix;
+        
+        if (config.suffix.empty()) {
+            std::cout << "No suffix specified, defaulting to prefix only." << std::endl;
+            config.search_mode = 1;
+        } else {
+            // Validate and convert suffix to uppercase
+            for (char& c : config.suffix) {
+                if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f'))) {
+                    std::cout << "Invalid hex suffix. Use only 0-9, A-F." << std::endl;
+                    return 1;
+                }
+                if (c >= 'a' && c <= 'f') c = c - 'a' + 'A';
+            }
+        }
     }
     
     // Get search behavior
@@ -486,30 +469,20 @@ int main(int argc, char* argv[]) {
     std::cout << "\nXeon Gold 5220 (Cascade Lake) Configuration:\n";
     std::cout << "Total CPU cores: " << total_cores << " (36 per socket)\n";
     std::cout << "CPU threads to use: " << config.cpu_threads << " (all cores)\n";
-    std::cout << "NUMA-aware: " << (config.numa_aware && numa_supported ? "Yes" : "No") << " (2 nodes)\n";
+    std::cout << "Search mode: ";
+    if (config.search_mode == 1) {
+        std::cout << "Prefix only (" << config.prefix << ")";
+    } else if (config.search_mode == 2) {
+        std::cout << "Suffix only (" << config.suffix << ")";
+    } else {
+        std::cout << "Prefix + Suffix (" << config.prefix << " + " << config.suffix << ")";
+    }
+    std::cout << "\nNUMA-aware: " << (config.numa_aware && numa_supported ? "Yes" : "No") << " (2 nodes)\n";
     std::cout << "NUMA support: " << (numa_supported ? "Available" : "Not available") << "\n";
     std::cout << "AVX-512: " << (avx512_supported ? "Yes" : "No") << "\n";
     std::cout << "Batch size: " << config.batch_size << " (optimized for Cascade Lake AVX-512)\n\n";
     
-    // Measure server performance
-    double keys_per_sec = measure_server_performance(config);
-    
-    // Calculate expected time
-    size_t prefix_len = prefix.length() / 2;
-    double combinations = pow(16.0, prefix_len);
-    double expected_time = combinations / keys_per_sec;
-    
-    std::cout << "\nExpected time for prefix '" << prefix << "': ";
-    if (expected_time < 60) {
-        std::cout << std::fixed << std::setprecision(1) << expected_time << " seconds";
-    } else if (expected_time < 3600) {
-        std::cout << std::fixed << std::setprecision(1) << (expected_time / 60) << " minutes";
-    } else if (expected_time < 86400) {
-        std::cout << std::fixed << std::setprecision(1) << (expected_time / 3600) << " hours";
-    } else {
-        std::cout << std::fixed << std::setprecision(1) << (expected_time / 86400) << " days";
-    }
-    std::cout << std::endl;
+
     
     // Start server-optimized search
     std::cout << "\nStarting Xeon Gold 5220 (Cascade Lake) optimized search...\n";
