@@ -180,23 +180,13 @@ void secure_wipe_found_keys() {
     }
 }
 
-// Adaptive batch size based on prefix length
-// - Short prefixes (1-3 hex chars): 4K batch for faster response when keys are found quickly
-// - Medium prefixes (4-6 hex chars): 8K batch for balanced performance
-// - Long prefixes (7+ hex chars): 16K batch for maximum throughput when keys are rare
+// Optimized batch sizes for maximum throughput
+// - Much larger batches reduce synchronization overhead
+// - This matches the approach used in the original working version
 inline size_t get_batch_size(size_t prefix_len) {
-    // For short prefixes (1-3 chars): smaller batches for faster response
-    if (prefix_len <= 6) { // 3 hex chars = 6 characters
-        return 4096; // 4K batch for quick response
-    }
-    // For medium prefixes (4-6 chars): medium batches
-    else if (prefix_len <= 12) { // 6 hex chars = 12 characters
-        return 8192; // 8K batch for balanced performance
-    }
-    // For long prefixes (7+ chars): larger batches for better throughput
-    else {
-        return 16384; // 16K batch for maximum throughput
-    }
+    // For all prefix lengths: use large batches for maximum throughput
+    // The original working version likely used much larger batches
+    return 65536; // 64K batch for maximum throughput
 }
 
 // Globals
@@ -260,71 +250,19 @@ void to_hex(const unsigned char* data, size_t len, std::string& out) {
     to_hex_fast(data, len, out);
 }
 
-// Pre-computed prefix bytes for faster checking
-struct PrefixInfo {
-    std::vector<unsigned char> prefix_bytes;
-    size_t prefix_len;
-    bool initialized = false;
-};
-
-static PrefixInfo prefix_info;
-
-// Initialize prefix info once
-void init_prefix_info() {
-    if (!prefix_info.initialized) {
-        prefix_info.prefix_len = PREFIX_STR.length() / 2;
-        prefix_info.prefix_bytes.resize(prefix_info.prefix_len);
-        
-        for (size_t i = 0; i < prefix_info.prefix_len; ++i) {
-            unsigned char high = (PREFIX_STR[2 * i] >= 'A') ? (PREFIX_STR[2 * i] - 'A' + 10) : (PREFIX_STR[2 * i] - '0');
-            unsigned char low = (PREFIX_STR[2 * i + 1] >= 'A') ? (PREFIX_STR[2 * i + 1] - 'A' + 10) : (PREFIX_STR[2 * i + 1] - '0');
-            prefix_info.prefix_bytes[i] = (high << 4) | low;
-        }
-        prefix_info.initialized = true;
-    }
-}
-
-// Ultra-fast prefix check using pre-computed bytes
-inline bool check_prefix_fast(const unsigned char* data) {
-    if (!prefix_info.initialized) {
-        init_prefix_info();
-    }
-    
-    // Use memcmp for better performance when prefix is longer than 4 bytes
-    if (prefix_info.prefix_len > 4) {
-        return memcmp(data, prefix_info.prefix_bytes.data(), prefix_info.prefix_len) == 0;
-    }
-    
-    // For shorter prefixes, use direct comparison
-    for (size_t i = 0; i < prefix_info.prefix_len; ++i) {
-        if (data[i] != prefix_info.prefix_bytes[i]) {
-            return false;
-        }
+// Fast hex check without string conversion (for performance)
+inline bool check_hex_prefix_fast(const unsigned char* data, const std::string& prefix) {
+    size_t prefix_len = prefix.length() / 2;
+    for (size_t i = 0; i < prefix_len; ++i) {
+        unsigned char high = (prefix[2 * i] >= 'A') ? (prefix[2 * i] - 'A' + 10) : (prefix[2 * i] - '0');
+        unsigned char low = (prefix[2 * i + 1] >= 'A') ? (prefix[2 * i + 1] - 'A' + 10) : (prefix[2 * i + 1] - '0');
+        unsigned char target = (high << 4) | low;
+        if (data[i] != target) return false;
     }
     return true;
 }
 
-// Ultra-fast suffix check using pre-computed bytes
-inline bool check_suffix_fast(const unsigned char* data) {
-    if (!prefix_info.initialized) {
-        init_prefix_info();
-    }
-    
-    size_t start_byte = 32 - prefix_info.prefix_len;
-    
-    // Use memcmp for better performance when prefix is longer than 4 bytes
-    if (prefix_info.prefix_len > 4) {
-        return memcmp(&data[start_byte], prefix_info.prefix_bytes.data(), prefix_info.prefix_len) == 0;
-    }
-    
-    // For shorter prefixes, use direct comparison
-    for (size_t i = 0; i < prefix_info.prefix_len; ++i) {
-        if (data[start_byte + i] != prefix_info.prefix_bytes[i]) {
-            return false;
-        }
-    }
-    return true;
-}
+// Fast hex prefix checking (inline for maximum performance)
 
 // Logging
 void log_found(const std::string& priv_hex, const std::string& pub_hex, const std::string& label) {
@@ -428,7 +366,7 @@ double measure_key_generation_speed() {
     std::cout << "\nRunning quick performance test (5 seconds on " << available_cores << " cores)..." << std::endl;
     
     const int test_duration = 5;
-    const size_t batch_size = 1000;
+    const size_t batch_size = 10000; // Larger batches for performance test
     
     std::atomic<uint64_t> total_keys_generated(0);
     std::vector<std::thread> test_threads;
@@ -497,7 +435,7 @@ void search_worker(int thread_id, int cpu_id) {
     size_t batch_size = get_batch_size(PREFIX_STR.length() / 2);
     
     uint64_t local_attempts = 0;
-    const int update_interval = 1000;
+    const int update_interval = 10000; // Reduced synchronization frequency
     
     while (!stop_search.load()) {
         // Generate batch of keys
@@ -512,13 +450,13 @@ void search_worker(int thread_id, int cpu_id) {
             
             local_attempts++;
             
-            // Check prefix match
-            if (check_prefix_fast(pubkey_buffer.data())) {
-                // Convert to hex for logging
+            // Check prefix match using fast hex comparison
+            if (check_hex_prefix_fast(pubkey_buffer.data(), PREFIX_STR)) {
+                // Only convert to hex when we actually find a match
                 to_hex(privkey_buffer.data(), PRIVKEY_BYTES, priv_hex);
                 to_hex(pubkey_buffer.data(), PUBKEY_BYTES, pub_hex);
                 
-                if (search_mode == 2 && check_suffix_fast(pubkey_buffer.data())) {
+                if (search_mode == 2 && check_hex_prefix_fast(&pubkey_buffer.data()[32 - PREFIX_STR.length()/2], PREFIX_STR)) {
                     log_found(priv_hex, pub_hex, "Prefix+Suffix");
                     prefix_suffix_matches_found.fetch_add(1);
                 } else {
@@ -649,9 +587,6 @@ int main() {
         }
     }
     
-    // Initialize prefix info
-    init_prefix_info();
-    
     // Measure performance
     double keys_per_sec_per_core = measure_key_generation_speed();
     
@@ -701,7 +636,7 @@ int main() {
     auto last_time = std::chrono::steady_clock::now();
     
     while (!stop_search.load()) {
-        std::this_thread::sleep_for(std::chrono::seconds(2));
+        std::this_thread::sleep_for(std::chrono::seconds(5)); // Reduced update frequency
         
         uint64_t current_attempts = total_attempts.load();
         int current_prefix_found = prefix_matches_found.load();
