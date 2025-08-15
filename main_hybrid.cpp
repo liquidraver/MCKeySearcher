@@ -229,7 +229,7 @@ extern "C" cudaError_t call_generate_ed25519_keys_kernel(
 
 // GPU worker thread
 void gpu_worker(const Config& config, int thread_id) {
-    const size_t BATCH_SIZE = 32768; // Larger batches for GPU
+    const size_t BATCH_SIZE = 131072; // Much larger batches for better GPU utilization
     
     // Allocate GPU memory
     curandState* d_states;
@@ -270,40 +270,49 @@ void gpu_worker(const Config& config, int thread_id) {
             d_states, (uint8_t*)d_seeds, (uint8_t*)d_pubkeys, (uint8_t*)d_privkeys, 
             BATCH_SIZE, block_size, grid_size
         ));
+        
+        // Copy results back to host (asynchronous for better performance)
+        CUDA_CHECK(cudaMemcpyAsync(h_seeds.data(), d_seeds, BATCH_SIZE * 32, cudaMemcpyDeviceToHost, 0));
+        CUDA_CHECK(cudaMemcpyAsync(h_pubkeys.data(), d_pubkeys, BATCH_SIZE * 32, cudaMemcpyDeviceToHost, 0));
+        CUDA_CHECK(cudaMemcpyAsync(h_privkeys.data(), d_privkeys, BATCH_SIZE * 64, cudaMemcpyDeviceToHost, 0));
+        
+        // Synchronize to ensure data is ready
         CUDA_CHECK(cudaDeviceSynchronize());
         
-        // Copy results back to host
-        CUDA_CHECK(cudaMemcpy(h_seeds.data(), d_seeds, BATCH_SIZE * 32, cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(h_pubkeys.data(), d_pubkeys, BATCH_SIZE * 32, cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(h_privkeys.data(), d_privkeys, BATCH_SIZE * 64, cudaMemcpyDeviceToHost));
-        
-        // Process results
-        for (size_t i = 0; i < BATCH_SIZE; ++i) {
+        // Process results in smaller chunks to reduce CPU blocking
+        const size_t CHUNK_SIZE = 16384;
+        for (size_t chunk_start = 0; chunk_start < BATCH_SIZE; chunk_start += CHUNK_SIZE) {
             if (stop_search.load()) break;
             
-            local_attempts++;
+            size_t chunk_end = std::min(chunk_start + CHUNK_SIZE, BATCH_SIZE);
             
-            bool prefix_match = check_prefix(&h_pubkeys[i * 32], config.prefix);
-            
-            if (prefix_match) {
-                to_hex_fast(&h_privkeys[i * 64], 64, priv_hex);
-                to_hex_fast(&h_pubkeys[i * 32], 32, pub_hex);
+            // Process chunk
+            for (size_t i = chunk_start; i < chunk_end; ++i) {
+                local_attempts++;
                 
-                if (config.search_mode == 2 && check_suffix(&h_pubkeys[i * 32], config.prefix)) {
-                    log_key(priv_hex, pub_hex, "GPU-Prefix+Suffix");
-                } else {
-                    log_key(priv_hex, pub_hex, "GPU-Prefix");
-                }
+                bool prefix_match = check_prefix(&h_pubkeys[i * 32], config.prefix);
                 
-                keys_found.fetch_add(1);
-                
-                if (!config.continuous && keys_found.load() >= config.target_keys) {
-                    stop_search.store(true);
-                    break;
+                if (prefix_match) {
+                    to_hex_fast(&h_privkeys[i * 64], 64, priv_hex);
+                    to_hex_fast(&h_pubkeys[i * 32], 32, pub_hex);
+                    
+                    if (config.search_mode == 2 && check_suffix(&h_pubkeys[i * 32], config.suffix)) {
+                        log_key(priv_hex, pub_hex, "GPU-Prefix+Suffix");
+                    } else {
+                        log_key(priv_hex, pub_hex, "GPU-Prefix");
+                    }
+                    
+                    keys_found.fetch_add(1);
+                    
+                    if (!config.continuous && keys_found.load() >= config.target_keys) {
+                        stop_search.store(true);
+                        break;
+                    }
                 }
             }
             
-            if (local_attempts % UPDATE_INTERVAL == 0) {
+            // Update progress more frequently
+            if (local_attempts % (UPDATE_INTERVAL / 4) == 0) {
                 total_attempts.fetch_add(local_attempts);
                 local_attempts = 0;
             }
@@ -600,7 +609,8 @@ int main(int argc, char* argv[]) {
     // Start GPU worker only if CUDA is available
     if (cuda_available && config.use_gpu) {
         threads.emplace_back(gpu_worker, std::ref(config), 0);
-        std::cout << "Started GPU worker thread\n";
+        std::cout << "Started GPU worker thread (Batch size: 131,072 keys)\n";
+        std::cout << "GPU optimization: Asynchronous memory transfers + chunked processing\n";
     }
     
     // Start CPU workers
@@ -625,7 +635,8 @@ int main(int argc, char* argv[]) {
         std::chrono::duration<double> elapsed = now - last_time;
         double keys_per_sec = (current_attempts - last_attempts) / elapsed.count();
         
-        print_status(current_attempts, current_found, keys_per_sec, "HYBRID");
+        std::string status_label = cuda_available ? "HYBRID" : "CPU-ONLY";
+        print_status(current_attempts, current_found, keys_per_sec, status_label);
         
         last_attempts = current_attempts;
         last_time = now;
