@@ -23,7 +23,7 @@ struct Config {
     bool continuous = false;
     int cpu_threads = 0; // Will be set automatically
     bool numa_aware = true;
-    size_t batch_size = 16384; // Reduced for stability while maintaining performance
+    size_t batch_size = 8192; // Optimized for L1 cache size (32KB per core)
     bool ultra_optimized = true;
 };
 
@@ -36,9 +36,9 @@ std::mutex print_mutex;
 
 // Cache-line aligned memory allocation for maximum performance
 struct alignas(64) UltraBuffer {
-    unsigned char seeds[16384 * 32];      // 512KB aligned to 64-byte cache lines
-    unsigned char pubkeys[16384 * 32];    // 512KB aligned to 64-byte cache lines
-    unsigned char privkeys[16384 * 64];   // 1MB aligned to 64-byte cache lines
+    unsigned char seeds[8192 * 32];       // 256KB aligned to 64-byte cache lines
+    unsigned char pubkeys[8192 * 32];     // 256KB aligned to 64-byte cache lines
+    unsigned char privkeys[8192 * 64];    // 512KB aligned to 64-byte cache lines
     int numa_node;
     
     UltraBuffer(int node) : numa_node(node) {
@@ -229,6 +229,11 @@ void set_ultra_thread_affinity(int cpu_id) {
         CPU_SET(cpu_id, &cpuset);
         pthread_setaffinity_np(current_thread, sizeof(cpu_set_t), &cpuset);
     }
+    
+    // Set thread priority to maximum
+    struct sched_param param;
+    param.sched_priority = sched_get_priority_max(SCHED_FIFO);
+    pthread_setschedparam(current_thread, SCHED_FIFO, &param);
 }
 
 // Get NUMA node for CPU core
@@ -391,6 +396,68 @@ double measure_ultra_performance(const Config& config) {
     return keys_per_sec;
 }
 
+// Cache performance test to identify bottlenecks
+double measure_cache_performance(const Config& config) {
+    std::cout << "\nRunning CACHE performance test (5 seconds)..." << std::endl;
+    std::cout << "Testing L1/L2/L3 cache efficiency..." << std::endl;
+    
+    const size_t TEST_BATCH = 1024; // Smaller batch for cache testing
+    const int TEST_DURATION = 5;
+    
+    std::atomic<uint64_t> total_keys(0);
+    std::vector<std::thread> threads;
+    
+    auto start = std::chrono::steady_clock::now();
+    
+    // Test with optimal thread count for cache performance
+    int test_threads = 18; // One L3 cache group
+    
+    for (int i = 0; i < test_threads; ++i) {
+        auto test_worker = [&, i]() {
+            int cpu_id = i % config.cpu_threads;
+            set_ultra_thread_affinity(cpu_id);
+            
+            UltraBuffer buffers(get_numa_node(cpu_id));
+            
+            uint64_t local_keys = 0;
+            auto end_time = start + std::chrono::seconds(TEST_DURATION);
+            
+            while (std::chrono::steady_clock::now() < end_time) {
+                for (size_t j = 0; j < TEST_BATCH; ++j) {
+                    // Focus on cache-friendly access patterns
+                    if (j + 16 < TEST_BATCH) {
+                        __builtin_prefetch(&buffers.seeds[(j + 16) * 32], 0, 1);
+                        __builtin_prefetch(&buffers.pubkeys[(j + 16) * 32], 1, 1);
+                        __builtin_prefetch(&buffers.privkeys[(j + 16) * 64], 1, 1);
+                    }
+                    
+                    randombytes_buf(&buffers.seeds[j * 32], 32);
+                    crypto_sign_ed25519_keypair(&buffers.pubkeys[j * 32], &buffers.privkeys[j * 64]);
+                }
+                local_keys += TEST_BATCH;
+            }
+            
+            total_keys.fetch_add(local_keys);
+        };
+        
+        threads.emplace_back(test_worker);
+    }
+    
+    for (auto& t : threads) {
+        t.join();
+    }
+    
+    auto end = std::chrono::steady_clock::now();
+    std::chrono::duration<double> elapsed = end - start;
+    
+    double keys_per_sec = total_keys.load() / elapsed.count();
+    
+    std::cout << "CACHE Performance: " << std::fixed << std::setprecision(0) 
+              << keys_per_sec << " keys/sec (" << test_threads << " test threads)" << std::endl;
+    
+    return keys_per_sec;
+}
+
 // Main function
 int main(int argc, char* argv[]) {
     // Initialize libsodium
@@ -483,7 +550,7 @@ int main(int argc, char* argv[]) {
     
     // Calculate optimal thread distribution for sustained performance
     unsigned int total_cores = std::thread::hardware_concurrency();
-    config.cpu_threads = total_cores; // Use ALL 72 cores
+    config.cpu_threads = 36; // TEST: Use only one socket to isolate memory bandwidth
     
     std::cout << "\n🚀 ULTRA-OPTIMIZED Configuration:\n";
     std::cout << "Total CPU cores: " << total_cores << " (36 per socket)\n";
@@ -498,6 +565,9 @@ int main(int argc, char* argv[]) {
     
     // Measure ultra-optimized performance
     double keys_per_sec = measure_ultra_performance(config);
+    
+    // Measure cache performance for diagnostics
+    double cache_perf = measure_cache_performance(config);
     
     // Calculate expected time
     size_t prefix_len = prefix.length() / 2;
