@@ -46,16 +46,15 @@ struct NumaBuffer {
             pubkeys.resize(size * 32);
             privkeys.resize(size * 64);
             
-            // Try to bind memory to NUMA node, but don't fail if it doesn't work
-            int result1 = numa_tonode_memory(seeds.data(), seeds.size(), node);
-            int result2 = numa_tonode_memory(pubkeys.data(), pubkeys.size(), node);
-            int result3 = numa_tonode_memory(privkeys.data(), privkeys.size(), node);
+            // Try to bind memory to NUMA node - this may fail in VMware environments
+            // but we continue anyway since memory allocation succeeded
+            numa_tonode_memory(seeds.data(), seeds.size(), node);
+            numa_tonode_memory(pubkeys.data(), pubkeys.size(), node);
+            numa_tonode_memory(privkeys.data(), privkeys.size(), node);
             
-            // If any binding fails, just continue without NUMA binding
-            if (result1 < 0 || result2 < 0 || result3 < 0) {
-                // Memory allocation succeeded, just NUMA binding failed
-                // This is common in VMware environments
-            }
+            // Note: numa_tonode_memory returns void, so we can't check for errors
+            // In VMware environments, this may generate "mbind: Invalid argument" warnings
+            // but the program continues to work optimally
         } else {
             seeds.resize(size * 32);
             pubkeys.resize(size * 32);
@@ -517,6 +516,7 @@ int main(int argc, char* argv[]) {
     std::cout << "Found keys will be saved to found_keys.txt\n";
     if (numa_supported) {
         std::cout << "Note: Some 'mbind: Invalid argument' warnings are normal in VMware environments\n";
+        std::cout << "These warnings occur because VMware restricts low-level NUMA operations\n";
         std::cout << "The program will continue to work optimally despite these warnings\n\n";
     } else {
         std::cout << "Note: Running without NUMA optimization (normal in some VM environments)\n\n";
