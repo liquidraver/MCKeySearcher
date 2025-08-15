@@ -15,7 +15,8 @@ CXX_FLAGS = -std=c++17 -O3 -march=cascadelake -mtune=cascadelake \
             -flto -fwhole-program -fuse-linker-plugin \
             -fno-stack-protector -fno-asynchronous-unwind-tables \
             -fno-unwind-tables -fno-ident \
-            -DULTRA_OPTIMIZED=1 -DNDEBUG -march=native -mtune=native
+            -DULTRA_OPTIMIZED=1 -DNDEBUG -march=native -mtune=native \
+            -Wno-deprecated-declarations
 
 # Link with OpenSSL for secure Ed25519 and SHA-NI
 LIBS = -lssl -lcrypto -lpthread -lnuma

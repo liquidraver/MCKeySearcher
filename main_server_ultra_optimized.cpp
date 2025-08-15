@@ -62,12 +62,16 @@ struct alignas(64) UltraBuffer {
     }
 };
 
-// SHA-NI optimized SHA-512 for Intel Xeon Gold 5220
+// SHA-NI optimized SHA-512 for Intel Xeon Gold 5220 using modern OpenSSL 3.0 API
 inline void sha512_sha_ni(const unsigned char* input, size_t len, unsigned char* output) {
-    SHA512_CTX ctx;
-    SHA512_Init(&ctx);
-    SHA512_Update(&ctx, input, len);
-    SHA512_Final(output, &ctx);
+    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+    if (ctx) {
+        EVP_DigestInit_ex(ctx, EVP_sha512(), NULL);
+        EVP_DigestUpdate(ctx, input, len);
+        unsigned int out_len;
+        EVP_DigestFinal_ex(ctx, output, &out_len);
+        EVP_MD_CTX_free(ctx);
+    }
 }
 
 // Ultra-optimized AVX-512 hex conversion with cache-line awareness
@@ -635,7 +639,8 @@ double measure_thread_scaling(const Config& config) {
 int main(int argc, char* argv[]) {
     // Initialize OpenSSL
     OpenSSL_add_all_algorithms();
-    ERR_load_CRYPTO_strings();
+    // Note: ERR_load_CRYPTO_strings() is deprecated in OpenSSL 3.0+
+    // Error strings are now loaded automatically
     
     // Seed the random number generator
     if (RAND_poll() != 1) {
@@ -840,7 +845,8 @@ int main(int argc, char* argv[]) {
     std::cout << "Keys saved to found_keys.txt" << std::endl;
     
     // Cleanup OpenSSL
-    EVP_cleanup();
+    // Note: EVP_cleanup() is deprecated in OpenSSL 3.0+
+    // Cleanup is now automatic
     
     return 0;
 }
