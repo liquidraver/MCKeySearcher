@@ -9,7 +9,6 @@
 #include <chrono>
 #include <string>
 #include <cstring>
-
 #include <cuda_runtime.h>
 #include <curand_kernel.h>
 #include <pthread.h>

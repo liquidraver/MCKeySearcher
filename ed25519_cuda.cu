@@ -2,7 +2,6 @@
 #include <curand_kernel.h>
 #include <cuda.h>
 #include <cuda_runtime_api.h>
-#include <sodium.h>
 
 // CUDA error checking macro
 #define CUDA_CHECK(call) \
@@ -53,121 +52,60 @@ extern "C" void init_ed25519_constants() {
 
 // CUDA kernel for Ed25519 key generation
 __global__ void generate_ed25519_keys_kernel(
-    unsigned char* private_keys,
-    unsigned char* public_keys,
-    unsigned long long* keys_generated,
-    unsigned long long* keys_checked,
-    const unsigned char* target_prefix,
-    int prefix_len,
-    const unsigned char* target_suffix,
-    int suffix_len,
-    int search_mode,
-    volatile int* found_flag,
-    unsigned long long batch_size
+    curandState* states,
+    uint8_t* seeds,
+    uint8_t* pubkeys,
+    uint8_t* privkeys,
+    int batch_size,
+    int block_size,
+    int grid_size
 ) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= batch_size) return;
     
-    // Initialize random number generator
-    curandState state;
-    curand_init(clock64(), idx, 0, &state);
+    // Get the random state for this thread
+    curandState state = states[idx];
     
-    // Generate random private key (32 bytes)
-    unsigned char private_key[32];
+    // Generate random seed (32 bytes)
     for (int i = 0; i < 32; i++) {
-        private_key[i] = curand(&state) & 0xFF;
+        seeds[idx * 32 + i] = curand(&state) & 0xFF;
+    }
+    
+    // Generate random private key (64 bytes for Ed25519)
+    for (int i = 0; i < 64; i++) {
+        privkeys[idx * 64 + i] = curand(&state) & 0xFF;
     }
     
     // For Ed25519, we need to ensure the private key is properly formatted
     // Clear the 3 least significant bits and set the 2nd most significant bit
-    private_key[0] &= 0xF8;
-    private_key[31] &= 0x7F;
-    private_key[31] |= 0x40;
+    privkeys[idx * 64 + 0] &= 0xF8;
+    privkeys[idx * 64 + 31] &= 0x7F;
+    privkeys[idx * 64 + 31] |= 0x40;
     
-    // Store private key
+    // Generate random public key (32 bytes) - placeholder for now
+    // In a real implementation, this would compute the actual Ed25519 public key
     for (int i = 0; i < 32; i++) {
-        private_keys[idx * 64 + i] = private_key[i];
+        pubkeys[idx * 32 + i] = curand(&state) & 0xFF;
     }
     
-    // Generate public key using libsodium (this would need to be implemented)
-    // For now, we'll use a placeholder
-    unsigned char public_key[32];
-    for (int i = 0; i < 32; i++) {
-        public_key[i] = curand(&state) & 0xFF;
-    }
-    
-    // Store public key
-    for (int i = 0; i < 32; i++) {
-        public_keys[idx * 32 + i] = public_key[i];
-    }
-    
-    // Check if this key matches our criteria
-    bool matches = false;
-    
-    if (search_mode == 1) { // Prefix only
-        matches = true;
-        for (int i = 0; i < prefix_len; i++) {
-            if (public_key[i] != target_prefix[i]) {
-                matches = false;
-                break;
-            }
-        }
-    } else if (search_mode == 2) { // Suffix only
-        matches = true;
-        for (int i = 0; i < suffix_len; i++) {
-            if (public_key[32 - suffix_len + i] != target_suffix[i]) {
-                matches = false;
-                break;
-            }
-        }
-    } else if (search_mode == 3) { // Prefix + Suffix
-        matches = true;
-        for (int i = 0; i < prefix_len; i++) {
-            if (public_key[i] != target_prefix[i]) {
-                matches = false;
-                break;
-            }
-        }
-        if (matches) {
-            for (int i = 0; i < suffix_len; i++) {
-                if (public_key[32 - suffix_len + i] != target_suffix[i]) {
-                    matches = false;
-                    break;
-                }
-            }
-        }
-    }
-    
-    if (matches) {
-        *found_flag = 1;
-    }
-    
-    atomicAdd(keys_generated, 1ULL);
-    atomicAdd(keys_checked, 1ULL);
+    // Update the random state
+    states[idx] = state;
 }
 
 // Wrapper function to call the CUDA kernel
-extern "C" void call_generate_ed25519_keys_kernel(
-    unsigned char* private_keys,
-    unsigned char* public_keys,
-    unsigned long long* keys_generated,
-    unsigned long long* keys_checked,
-    const unsigned char* target_prefix,
-    int prefix_len,
-    const unsigned char* target_suffix,
-    int suffix_len,
-    int search_mode,
-    volatile int* found_flag,
-    unsigned long long batch_size
+extern "C" cudaError_t call_generate_ed25519_keys_kernel(
+    curandState* d_states,
+    uint8_t* d_seeds,
+    uint8_t* d_pubkeys,
+    uint8_t* d_privkeys,
+    int batch_size,
+    int block_size,
+    int grid_size
 ) {
-    int threadsPerBlock = 256;
-    int blocksPerGrid = (batch_size + threadsPerBlock - 1) / threadsPerBlock;
-    
-    generate_ed25519_keys_kernel<<<blocksPerGrid, threadsPerBlock>>>(
-        private_keys, public_keys, keys_generated, keys_checked,
-        target_prefix, prefix_len, target_suffix, suffix_len,
-        search_mode, found_flag, batch_size
+    generate_ed25519_keys_kernel<<<grid_size, block_size>>>(
+        d_states, d_seeds, d_pubkeys, d_privkeys,
+        batch_size, block_size, grid_size
     );
     
-    CUDA_CHECK(cudaDeviceSynchronize());
+    return cudaGetLastError();
 }
