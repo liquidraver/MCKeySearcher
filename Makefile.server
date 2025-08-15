@@ -5,11 +5,12 @@
 # Compiler
 CXX = g++
 
-# Compiler flags optimized for server CPUs
-CXX_FLAGS = -std=c++17 -O3 -march=native -mtune=native \
+# Compiler flags optimized for Intel Xeon Gold 5220 with AVX-512
+CXX_FLAGS = -std=c++17 -O3 -march=skylake-avx512 -mtune=skylake-avx512 \
             -fomit-frame-pointer -pthread -DNDEBUG \
             -funroll-loops -fprefetch-loop-arrays \
-            -mavx2 -mfma -mbmi2 -march=skylake-avx512 \
+            -mavx512f -mavx512dq -mavx512bw -mavx512vl -mavx512cd \
+            -mfma -mbmi2 -march=skylake-avx512 \
             -flto -fwhole-program -fuse-linker-plugin \
             -fno-stack-protector -fno-asynchronous-unwind-tables \
             -fno-unwind-tables -fno-ident \
@@ -38,7 +39,6 @@ install-deps:
 	sudo apt update
 	sudo apt install -y build-essential g++ make
 	sudo apt install -y libsodium-dev libnuma-dev
-	sudo apt install -y hwloc
 
 # Performance build (maximum server optimization)
 perf: CXX_FLAGS += -DNDEBUG -march=native -mtune=native

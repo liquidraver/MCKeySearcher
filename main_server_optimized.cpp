@@ -10,12 +10,11 @@
 #include <string>
 #include <cstring>
 #include <cmath>
-#include <sched.h>
-#include <numa.h>
 #include <pthread.h>
-#include <sys/sysinfo.h>
+#include <numa.h>
+#include <immintrin.h>
 
-// Server-optimized configuration
+// Server-optimized configuration for Intel Xeon Gold 5220
 struct Config {
     std::string prefix;
     int search_mode = 1; // 1: prefix only, 2: prefix + suffix
@@ -23,8 +22,7 @@ struct Config {
     bool continuous = false;
     int cpu_threads = 0; // Will be set automatically
     bool numa_aware = true;
-    bool pin_threads = true;
-    size_t batch_size = 16384; // Larger batches for server CPUs
+    size_t batch_size = 32768; // Larger batches for AVX-512 optimized CPUs
 };
 
 // Global state
@@ -34,7 +32,7 @@ std::atomic<bool> stop_search(false);
 std::mutex file_mutex;
 std::mutex print_mutex;
 
-// NUMA-aware memory allocation
+// NUMA-aware memory allocation for 2-socket setup
 struct NumaBuffer {
     std::vector<unsigned char> seeds;
     std::vector<unsigned char> pubkeys;
@@ -60,33 +58,121 @@ struct NumaBuffer {
     }
 };
 
-// Fast hex conversion using lookup table (cache-optimized)
-static const char hex_chars[] = "0123456789ABCDEF";
-
-inline void to_hex_fast(const unsigned char* data, size_t len, std::string& out) {
+// AVX-512 optimized hex conversion (8 bytes at once)
+inline void to_hex_fast_avx512(const unsigned char* data, size_t len, std::string& out) {
     out.resize(len * 2);
-    for (size_t i = 0; i < len; ++i) {
-        out[2 * i] = hex_chars[data[i] >> 4];
-        out[2 * i + 1] = hex_chars[data[i] & 0x0F];
+    
+    // Process 8 bytes at a time with AVX-512
+    size_t i = 0;
+    for (; i + 8 <= len; i += 8) {
+        __m512i bytes = _mm512_loadu_si512(&data[i]);
+        
+        // Extract high nibbles (bits 4-7)
+        __m512i high = _mm512_srli_epi64(bytes, 4);
+        high = _mm512_and_si512(high, _mm512_set1_epi8(0x0F));
+        
+        // Extract low nibbles (bits 0-3)
+        __m512i low = _mm512_and_si512(bytes, _mm512_set1_epi8(0x0F));
+        
+        // Convert to hex characters
+        __m512i high_hex = _mm512_add_epi8(high, _mm512_set1_epi8('0'));
+        __m512i low_hex = _mm512_add_epi8(low, _mm512_set1_epi8('0'));
+        
+        // Adjust for A-F range
+        __m512i high_mask = _mm512_cmpgt_epi8(high, _mm512_set1_epi8(9));
+        __m512i low_mask = _mm512_cmpgt_epi8(low, _mm512_set1_epi8(9));
+        
+        high_hex = _mm512_mask_add_epi8(high_hex, high_mask, high_hex, _mm512_set1_epi8('A' - '0' - 10));
+        low_hex = _mm512_mask_add_epi8(low_hex, low_mask, low_hex, _mm512_set1_epi8('A' - '0' - 10));
+        
+        // Interleave high and low nibbles
+        __m512i result = _mm512_unpacklo_epi8(high_hex, low_hex);
+        
+        // Store result
+        _mm512_storeu_si512(&out[i * 2], result);
+    }
+    
+    // Handle remaining bytes with standard method
+    for (; i < len; ++i) {
+        unsigned char high = (data[i] >> 4) & 0x0F;
+        unsigned char low = data[i] & 0x0F;
+        out[2 * i] = (high < 10) ? (high + '0') : (high - 10 + 'A');
+        out[2 * i + 1] = (low < 10) ? (low + '0') : (low - 10 + 'A');
     }
 }
 
-// Fast prefix checking (vectorized-friendly)
-inline bool check_prefix(const unsigned char* data, const std::string& prefix) {
+// Fallback hex conversion for non-AVX-512
+inline void to_hex_fast_fallback(const unsigned char* data, size_t len, std::string& out) {
+    out.resize(len * 2);
+    for (size_t i = 0; i < len; ++i) {
+        unsigned char high = (data[i] >> 4) & 0x0F;
+        unsigned char low = data[i] & 0x0F;
+        out[2 * i] = (high < 10) ? (high + '0') : (high - 10 + 'A');
+        out[2 * i + 1] = (low < 10) ? (low + '0') : (low - 10 + 'A');
+    }
+}
+
+// Choose optimal hex conversion method
+inline void to_hex_fast(const unsigned char* data, size_t len, std::string& out) {
+    if (len >= 8) {
+        to_hex_fast_avx512(data, len, out);
+    } else {
+        to_hex_fast_fallback(data, len, out);
+    }
+}
+
+// AVX-512 optimized prefix checking (vectorized)
+inline bool check_prefix_avx512(const unsigned char* data, const std::string& prefix) {
     size_t prefix_len = prefix.length() / 2;
+    
+    // Convert prefix to expected bytes
+    std::vector<unsigned char> expected_bytes(prefix_len);
     for (size_t i = 0; i < prefix_len; ++i) {
         unsigned char high = (prefix[2 * i] >= 'A') ? (prefix[2 * i] - 'A' + 10) : (prefix[2 * i] - '0');
         unsigned char low = (prefix[2 * i + 1] >= 'A') ? (prefix[2 * i + 1] - 'A' + 10) : (prefix[2 * i + 1] - '0');
-        unsigned char expected = (high << 4) | low;
-        if (data[i] != expected) return false;
+        expected_bytes[i] = (high << 4) | low;
     }
-    return true;
+    
+    // Compare using AVX-512 if possible
+    if (prefix_len >= 8) {
+        __m512i expected = _mm512_loadu_si512(expected_bytes.data());
+        __m512i actual = _mm512_loadu_si512(data);
+        __mmask64 mask = _mm512_cmpeq_epi8_mask(expected, actual);
+        
+        // Check if all bytes match
+        return _cvtmask64_u64(mask) == ((1ULL << prefix_len) - 1);
+    } else {
+        // Fallback for short prefixes
+        for (size_t i = 0; i < prefix_len; ++i) {
+            if (data[i] != expected_bytes[i]) return false;
+        }
+        return true;
+    }
+}
+
+// Fast prefix checking with fallback
+inline bool check_prefix(const unsigned char* data, const std::string& prefix) {
+    size_t prefix_len = prefix.length() / 2;
+    
+    if (prefix_len >= 8) {
+        return check_prefix_avx512(data, prefix);
+    } else {
+        // Standard method for short prefixes
+        for (size_t i = 0; i < prefix_len; ++i) {
+            unsigned char high = (prefix[2 * i] >= 'A') ? (prefix[2 * i] - 'A' + 10) : (prefix[2 * i] - '0');
+            unsigned char low = (prefix[2 * i + 1] >= 'A') ? (prefix[2 * i + 1] - 'A' + 10) : (prefix[2 * i + 1] - '0');
+            unsigned char expected = (high << 4) | low;
+            if (data[i] != expected) return false;
+        }
+        return true;
+    }
 }
 
 // Fast suffix checking (vectorized-friendly)
 inline bool check_suffix(const unsigned char* data, const std::string& prefix) {
     size_t prefix_len = prefix.length() / 2;
     size_t start_byte = 32 - prefix_len;
+    
     for (size_t i = 0; i < prefix_len; ++i) {
         unsigned char high = (prefix[2 * i] >= 'A') ? (prefix[2 * i] - 'A' + 10) : (prefix[2 * i] - '0');
         unsigned char low = (prefix[2 * i + 1] >= 'A') ? (prefix[2 * i + 1] - 'A' + 10) : (prefix[2 * i + 1] - '0');
@@ -114,7 +200,7 @@ void print_status(uint64_t attempts, int found, double keys_per_sec, const std::
               << "          " << std::flush;
 }
 
-// Set thread affinity to specific CPU core
+// Set thread affinity to specific CPU core with NUMA awareness
 void set_thread_affinity(int cpu_id) {
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
@@ -134,12 +220,10 @@ int get_numa_node(int cpu_id) {
     return 0;
 }
 
-// Server-optimized CPU worker thread
+// Server-optimized CPU worker thread for Xeon Gold 5220
 void server_cpu_worker(const Config& config, int thread_id, int cpu_id) {
     // Set thread affinity to specific CPU core
-    if (config.pin_threads) {
-        set_thread_affinity(cpu_id);
-    }
+    set_thread_affinity(cpu_id);
     
     // Get NUMA node for this CPU
     int numa_node = get_numa_node(cpu_id);
@@ -173,9 +257,9 @@ void server_cpu_worker(const Config& config, int thread_id, int cpu_id) {
             local_attempts++;
             
             // Pre-fetch next elements
-            if (i + 4 < config.batch_size) {
-                __builtin_prefetch(&buffers.pubkeys[(i + 4) * 32], 0, 1);
-                __builtin_prefetch(&buffers.privkeys[(i + 4) * 64], 0, 1);
+            if (i + 8 < config.batch_size) {
+                __builtin_prefetch(&buffers.pubkeys[(i + 8) * 32], 0, 1);
+                __builtin_prefetch(&buffers.privkeys[(i + 8) * 64], 0, 1);
             }
             
             bool prefix_match = check_prefix(&buffers.pubkeys[i * 32], config.prefix);
@@ -211,9 +295,9 @@ void server_cpu_worker(const Config& config, int thread_id, int cpu_id) {
     }
 }
 
-// Performance test optimized for server environment
+// Performance test optimized for Xeon Gold 5220
 double measure_server_performance(const Config& config) {
-    std::cout << "\nRunning server performance test (5 seconds)..." << std::endl;
+    std::cout << "\nRunning Xeon Gold 5220 performance test (5 seconds)..." << std::endl;
     
     const size_t TEST_BATCH = config.batch_size;
     const int TEST_DURATION = 5;
@@ -224,14 +308,12 @@ double measure_server_performance(const Config& config) {
     auto start = std::chrono::steady_clock::now();
     
     // Test with multiple threads to simulate real workload
-    int test_threads = std::min(config.cpu_threads, 16); // Limit test threads
+    int test_threads = std::min(config.cpu_threads, 24); // Test with more threads for 72-core system
     
     for (int i = 0; i < test_threads; ++i) {
         auto test_worker = [&, i]() {
             int cpu_id = i % config.cpu_threads;
-            if (config.pin_threads) {
-                set_thread_affinity(cpu_id);
-            }
+            set_thread_affinity(cpu_id);
             
             NumaBuffer buffers(TEST_BATCH, get_numa_node(cpu_id));
             
@@ -261,7 +343,7 @@ double measure_server_performance(const Config& config) {
     
     double keys_per_sec = total_keys.load() / elapsed.count();
     
-    std::cout << "Server Performance: " << std::fixed << std::setprecision(0) 
+    std::cout << "Xeon Gold 5220 Performance: " << std::fixed << std::setprecision(0) 
               << keys_per_sec << " keys/sec (" << test_threads << " test threads)" << std::endl;
     
     return keys_per_sec;
@@ -275,15 +357,14 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
-    // Initialize NUMA if available
-    if (numa_available() >= 0) {
-        std::cout << "NUMA support detected" << std::endl;
-    } else {
-        std::cout << "NUMA support not available" << std::endl;
-    }
+    // Check AVX-512 support
+    bool avx512_supported = false;
+    #ifdef __AVX512F__
+    avx512_supported = true;
+    #endif
     
-    std::cout << "🔍 MCKeySearcher - Server-Optimized Ed25519 Key Searcher\n";
-    std::cout << "🚀 Optimized for high-core-count servers\n\n";
+    std::cout << "🔍 MCKeySearcher - Xeon Gold 5220 Optimized Ed25519 Key Searcher\n";
+    std::cout << "🚀 Optimized for Intel Xeon Gold 5220 with " << (avx512_supported ? "AVX-512" : "AVX2") << "\n\n";
     
     // Get prefix
     std::string prefix;
@@ -352,16 +433,16 @@ int main(int argc, char* argv[]) {
             break;
     }
     
-    // Calculate optimal thread distribution for server
+    // Calculate optimal thread distribution for 2-socket system
     unsigned int total_cores = std::thread::hardware_concurrency();
-    config.cpu_threads = total_cores; // Use ALL cores on server
+    config.cpu_threads = total_cores; // Use ALL 72 cores
     
-    std::cout << "\nServer Configuration:\n";
-    std::cout << "Total CPU cores: " << total_cores << "\n";
+    std::cout << "\nXeon Gold 5220 Configuration:\n";
+    std::cout << "Total CPU cores: " << total_cores << " (36 per socket)\n";
     std::cout << "CPU threads to use: " << config.cpu_threads << " (all cores)\n";
-    std::cout << "NUMA-aware: " << (config.numa_aware ? "Yes" : "No") << "\n";
-    std::cout << "Thread pinning: " << (config.pin_threads ? "Yes" : "No") << "\n";
-    std::cout << "Batch size: " << config.batch_size << "\n\n";
+    std::cout << "NUMA-aware: " << (config.numa_aware ? "Yes" : "No") << " (2 nodes)\n";
+    std::cout << "AVX-512: " << (avx512_supported ? "Yes" : "No") << "\n";
+    std::cout << "Batch size: " << config.batch_size << " (optimized for AVX-512)\n\n";
     
     // Measure server performance
     double keys_per_sec = measure_server_performance(config);
@@ -384,15 +465,15 @@ int main(int argc, char* argv[]) {
     std::cout << std::endl;
     
     // Start server-optimized search
-    std::cout << "\nStarting server-optimized search...\n";
+    std::cout << "\nStarting Xeon Gold 5220 optimized search...\n";
     std::cout << "Found keys will be saved to found_keys.txt\n\n";
     
     std::vector<std::thread> threads;
     
-    // Start CPU workers with optimal distribution
+    // Start CPU workers with optimal distribution across both sockets
     for (int i = 0; i < config.cpu_threads; ++i) {
         threads.emplace_back(server_cpu_worker, std::ref(config), i, i);
-        std::cout << "Started CPU worker " << i << " on core " << i << "\n";
+        std::cout << "Started CPU worker " << i << " on core " << i << " (NUMA " << get_numa_node(i) << ")\n";
     }
     
     // Monitor progress
@@ -409,7 +490,7 @@ int main(int argc, char* argv[]) {
         std::chrono::duration<double> elapsed = now - last_time;
         double current_keys_per_sec = (current_attempts - last_attempts) / elapsed.count();
         
-        print_status(current_attempts, current_found, current_keys_per_sec, "SERVER");
+        print_status(current_attempts, current_found, current_keys_per_sec, "XEON-GOLD");
         
         last_attempts = current_attempts;
         last_time = now;
