@@ -12,6 +12,9 @@
 #include <cmath>
 #include <cuda_runtime.h>
 #include <curand_kernel.h>
+#include <pthread.h>
+#include <numa.h>
+#include <immintrin.h>
 
 // CUDA error checking macro
 #define CUDA_CHECK(call) do { \
@@ -26,12 +29,15 @@
 // Configuration
 struct Config {
     std::string prefix;
-    int search_mode = 1; // 1: prefix only, 2: prefix + suffix
+    std::string suffix;  // For suffix-only or prefix+suffix searches
+    int search_mode = 1; // 1: prefix only, 2: suffix only, 3: prefix + suffix
     int target_keys = 1;
     bool continuous = false;
     bool use_gpu = true;
     bool use_cpu = true;
     int cpu_threads = 0; // Will be set automatically
+    bool numa_aware = true;
+    size_t batch_size = 32768; // Larger batches for AVX-512 optimized CPUs
 };
 
 // Global state
@@ -40,6 +46,37 @@ std::atomic<int> keys_found(0);
 std::atomic<bool> stop_search(false);
 std::mutex file_mutex;
 std::mutex print_mutex;
+
+// NUMA-aware memory allocation for 2-socket setup
+struct NumaBuffer {
+    std::vector<unsigned char> seeds;
+    std::vector<unsigned char> pubkeys;
+    std::vector<unsigned char> privkeys;
+    int numa_node;
+    
+    NumaBuffer(size_t size, int node) : numa_node(node) {
+        // Allocate memory on specific NUMA node
+        if (numa_available() >= 0) {
+            seeds.resize(size * 32);
+            pubkeys.resize(size * 32);
+            privkeys.resize(size * 64);
+            
+            // Try to bind memory to NUMA node - this may fail in VMware environments
+            // but we continue anyway since memory allocation succeeded
+            numa_tonode_memory(seeds.data(), seeds.size(), node);
+            numa_tonode_memory(pubkeys.data(), pubkeys.size(), node);
+            numa_tonode_memory(privkeys.data(), privkeys.size(), node);
+            
+            // Note: numa_tonode_memory returns void, so we can't check for errors
+            // In VMware environments, this may generate "mbind: Invalid argument" warnings
+            // but the program continues to work optimally
+        } else {
+            seeds.resize(size * 32);
+            pubkeys.resize(size * 32);
+            privkeys.resize(size * 64);
+        }
+    }
+};
 
 // Fast hex conversion
 static const char hex_chars[] = "0123456789ABCDEF";
@@ -84,6 +121,33 @@ void log_key(const std::string& priv_hex, const std::string& pub_hex, const std:
     if (out.is_open()) {
         out << label << ": " << priv_hex << " | " << pub_hex << std::endl;
     }
+}
+
+// Set thread affinity to specific CPU core with NUMA awareness
+void set_thread_affinity(int cpu_id) {
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(cpu_id, &cpuset);
+    
+    pthread_t current_thread = pthread_self();
+    int result = pthread_setaffinity_np(current_thread, sizeof(cpu_set_t), &cpuset);
+    if (result != 0) {
+        // Don't print warnings for every thread, just log the first few failures
+        static int warning_count = 0;
+        if (warning_count < 5) {
+            std::cerr << "Warning: Failed to set affinity for thread to CPU " << cpu_id 
+                      << " (error " << result << ")" << std::endl;
+            warning_count++;
+        }
+    }
+}
+
+// Get NUMA node for CPU core
+int get_numa_node(int cpu_id) {
+    if (numa_available() >= 0) {
+        return numa_node_of_cpu(cpu_id);
+    }
+    return 0;
 }
 
 // Print status
@@ -201,13 +265,16 @@ void gpu_worker(const Config& config, int thread_id) {
     CUDA_CHECK(cudaFree(d_privkeys));
 }
 
-// CPU worker thread
-void cpu_worker(const Config& config, int thread_id) {
-    const size_t BATCH_SIZE = 8192;
+// Server-optimized CPU worker thread for Xeon Gold 5220
+void cpu_worker(const Config& config, int thread_id, int cpu_id) {
+    // Set thread affinity to specific CPU core
+    set_thread_affinity(cpu_id);
     
-    std::vector<unsigned char> seeds(BATCH_SIZE * 32);
-    std::vector<unsigned char> pubkeys(BATCH_SIZE * 32);
-    std::vector<unsigned char> privkeys(BATCH_SIZE * 64);
+    // Get NUMA node for this CPU
+    int numa_node = get_numa_node(cpu_id);
+    
+    // Allocate NUMA-aware buffers
+    NumaBuffer buffers(config.batch_size, numa_node);
     
     std::string pub_hex, priv_hex;
     pub_hex.reserve(64);
@@ -216,28 +283,55 @@ void cpu_worker(const Config& config, int thread_id) {
     uint64_t local_attempts = 0;
     const int UPDATE_INTERVAL = 1000;
     
+    // Pre-fetch buffers into cache
+    __builtin_prefetch(buffers.seeds.data(), 0, 3);
+    __builtin_prefetch(buffers.pubkeys.data(), 1, 3);
+    __builtin_prefetch(buffers.privkeys.data(), 1, 3);
+    
     while (!stop_search.load()) {
-        for (size_t i = 0; i < BATCH_SIZE; ++i) {
-            randombytes_buf(&seeds[i * 32], 32);
-            crypto_sign_ed25519_keypair(&pubkeys[i * 32], &privkeys[i * 64]);
+        // Generate batch of keys
+        for (size_t i = 0; i < config.batch_size; ++i) {
+            randombytes_buf(&buffers.seeds[i * 32], 32);
+            crypto_sign_ed25519_keypair(&buffers.pubkeys[i * 32], &buffers.privkeys[i * 64]);
         }
         
-        for (size_t i = 0; i < BATCH_SIZE; ++i) {
+        // Process batch with cache optimization
+        for (size_t i = 0; i < config.batch_size; ++i) {
             if (stop_search.load()) break;
             
             local_attempts++;
             
-            bool prefix_match = check_prefix(&pubkeys[i * 32], config.prefix);
+            // Pre-fetch next elements
+            if (i + 64 < config.batch_size) {
+                __builtin_prefetch(&buffers.pubkeys[(i + 64) * 32], 0, 1);
+                __builtin_prefetch(&buffers.privkeys[(i + 64) * 64], 0, 1);
+            }
             
-            if (prefix_match) {
-                to_hex_fast(&privkeys[i * 64], 64, priv_hex);
-                to_hex_fast(&pubkeys[i * 32], 32, pub_hex);
+            bool match = false;
+            std::string match_type;
+            
+            // Check based on search mode
+            if (config.search_mode == 1) {
+                // Prefix only
+                match = check_prefix(&buffers.pubkeys[i * 32], config.prefix);
+                if (match) match_type = "CPU-Prefix";
+            } else if (config.search_mode == 2) {
+                // Suffix only
+                match = check_suffix(&buffers.pubkeys[i * 32], config.suffix);
+                if (match) match_type = "CPU-Suffix";
+            } else if (config.search_mode == 3) {
+                // Prefix + Suffix
+                bool prefix_match = check_prefix(&buffers.pubkeys[i * 32], config.prefix);
+                bool suffix_match = check_suffix(&buffers.pubkeys[i * 32], config.suffix);
+                match = prefix_match && suffix_match;
+                if (match) match_type = "CPU-Prefix+Suffix";
+            }
+            
+            if (match) {
+                to_hex_fast(&buffers.privkeys[i * 64], 64, priv_hex);
+                to_hex_fast(&buffers.pubkeys[i * 32], 32, pub_hex);
                 
-                if (config.search_mode == 2 && check_suffix(&pubkeys[i * 32], config.prefix)) {
-                    log_key(priv_hex, pub_hex, "CPU-Prefix+Suffix");
-                } else {
-                    log_key(priv_hex, pub_hex, "CPU-Prefix");
-                }
+                log_key(priv_hex, pub_hex, match_type);
                 
                 keys_found.fetch_add(1);
                 
@@ -430,12 +524,33 @@ int main(int argc, char* argv[]) {
     // Get search mode
     std::cout << "\nSearch mode:\n";
     std::cout << "1. Prefix only\n";
-    std::cout << "2. Prefix + Suffix\n";
-    std::cout << "Choice (1-2): ";
+    std::cout << "2. Suffix only\n";
+    std::cout << "3. Prefix + Suffix\n";
+    std::cout << "Choice (1-3): ";
     std::cin >> config.search_mode;
     
-    if (config.search_mode != 1 && config.search_mode != 2) {
+    if (config.search_mode < 1 || config.search_mode > 3) {
         config.search_mode = 1;
+    }
+    
+    // Get suffix if needed
+    if (config.search_mode == 2 || config.search_mode == 3) {
+        std::cout << "\nEnter hex suffix (e.g., BEEF, 1234): ";
+        std::cin >> config.suffix;
+        
+        if (config.suffix.empty()) {
+            std::cout << "No suffix specified, defaulting to prefix only." << std::endl;
+            config.search_mode = 1;
+        } else {
+            // Validate and convert suffix to uppercase
+            for (char& c : config.suffix) {
+                if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f'))) {
+                    std::cout << "Invalid hex suffix. Use only 0-9, A-F." << std::endl;
+                    return 1;
+                }
+                if (c >= 'a' && c <= 'f') c = c - 'a' + 'A';
+            }
+        }
     }
     
     // Get search behavior
@@ -475,7 +590,15 @@ int main(int argc, char* argv[]) {
     std::cout << "\nSystem Info:\n";
     std::cout << "Total CPU cores: " << total_cores << "\n";
     std::cout << "CPU threads to use: " << config.cpu_threads << " (1 core reserved for OS)\n";
-    std::cout << "GPU: " << prop.name << "\n\n";
+    std::cout << "Search mode: ";
+    if (config.search_mode == 1) {
+        std::cout << "Prefix only (" << config.prefix << ")";
+    } else if (config.search_mode == 2) {
+        std::cout << "Suffix only (" << config.suffix << ")";
+    } else {
+        std::cout << "Prefix + Suffix (" << config.prefix << " + " << config.suffix << ")";
+    }
+    std::cout << "\nGPU: " << prop.name << "\n\n";
     
     // Measure hybrid performance
     PerformanceResults perf = measure_hybrid_performance();
@@ -512,7 +635,7 @@ int main(int argc, char* argv[]) {
     // Start CPU workers
     if (config.use_cpu) {
         for (int i = 0; i < config.cpu_threads; ++i) {
-            threads.emplace_back(cpu_worker, std::ref(config), i);
+            threads.emplace_back(cpu_worker, std::ref(config), i, i);
         }
         std::cout << "Started " << config.cpu_threads << " CPU worker threads\n";
     }

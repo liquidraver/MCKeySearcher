@@ -1,6 +1,4 @@
 # Hybrid CPU+GPU Ed25519 Key Searcher Makefile
-# Combines CPU and GPU for maximum performance
-# Optimized for GTX 1080 (Compute Capability 6.1)
 
 # Compilers
 NVCC = nvcc
@@ -16,12 +14,17 @@ NVCC_FLAGS = -arch=sm_61 -O3 -Xcompiler -O3 -std=c++14 \
              -use_fast_math -maxrregcount=32 \
              -Xptxas -O3,-v
 
-CXX_FLAGS = -std=c++14 -O3 -march=native -mtune=native \
+CXX_FLAGS = -std=c++17 -O3 -march=cascadelake -mtune=cascadelake \
             -fomit-frame-pointer -pthread -DNDEBUG \
-            -funroll-loops -fprefetch-loop-arrays
+            -funroll-loops -fprefetch-loop-arrays \
+            -mavx512f -mavx512dq -mavx512bw -mavx512vl -mavx512cd \
+            -mfma -mbmi2 \
+            -flto -fwhole-program -fuse-linker-plugin \
+            -fno-stack-protector -fno-asynchronous-unwind-tables \
+            -fno-unwind-tables -fno-ident
 
 # Libraries
-LIBS = -L$(CUDA_LIB) -lcudart -lcurand -lsodium -lpthread
+LIBS = -L$(CUDA_LIB) -lcudart -lcurand -lsodium -lpthread -lnuma
 
 # Include paths
 INCLUDES = -I$(CUDA_INC)
@@ -60,7 +63,7 @@ clean:
 install-deps:
 	sudo apt update
 	sudo apt install -y build-essential g++ make
-	sudo apt install -y libsodium-dev
+	sudo apt install -y libsodium-dev libnuma-dev
 	# CUDA toolkit should be installed separately
 
 # Check CUDA installation
@@ -73,6 +76,10 @@ check-cuda:
 perf: NVCC_FLAGS += -DNDEBUG -Xcompiler -DNDEBUG
 perf: CXX_FLAGS += -DNDEBUG
 perf: $(TARGET)
+
+# Server-optimized build (maximum CPU optimization)
+server: CXX_FLAGS += -DNDEBUG -march=native -mtune=native
+server: $(TARGET)
 
 # Debug build
 debug: NVCC_FLAGS += -g -G -O0
@@ -89,5 +96,5 @@ quick: NVCC_FLAGS = -arch=sm_61 -O1 -std=c++14
 quick: CXX_FLAGS = -std=c++14 -O1 -pthread
 quick: $(TARGET)
 
-.PHONY: all clean install-deps check-cuda perf debug profile quick
+.PHONY: all clean install-deps check-cuda perf server debug profile quick
 

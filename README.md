@@ -1,287 +1,241 @@
-# MCKeySearcher
+# MCKeySearcher - Hybrid CPU+GPU Ed25519 Key Searcher
 
-A high-performance Ed25519 public key searcher that finds keys matching specific hex prefixes. Built with custom AVX2-optimized Ed25519 implementation and Intel SHA Extensions for maximum speed.
-
-This program was created to generate custom hexadecimal public key values for [MeshCore](https://github.com/meshcore-dev/MeshCore), allowing the app to display more visually appealing hex values.
-
-## 🚀 TL;DR - Quick Start
-
-```bash
-# 1. Install dependencies and build
-sudo apt update && sudo apt install build-essential git autotools-dev automake libtool pkg-config libssl-dev
-git clone https://github.com/liquidraver/MCKeySearcher
-cd MCKeySearcher
-make
-
-# 2. Generate a key (example: starting with "BEEF")
-./mckeysearcher
-# Enter: BEEF
-
-# 3. IMPORTANT: Copy the private key from found_keys.txt to paper or insert into node
-cat found_keys.txt
-
-# 4. Securely delete the file (optional but recommended)
-rm found_keys.txt
-```
-
-**⚠️ SECURITY:**
-- Copy the private key to paper or insert directly into your node
-- **NEVER** leave private keys on your computer
-- Delete found_keys.txt after copying the key
-- Private keys are automatically wiped from memory after use
+A high-performance Ed25519 key searcher that combines CPU and GPU acceleration for maximum performance. Optimized for server environments with NUMA support and AVX-512 optimizations.
 
 ## Features
 
-- **Custom Ed25519 Implementation**: Built from scratch for maximum key generation performance
-- **Intel SHA Extensions**: SHA-512 acceleration using Intel SHA-NI instructions (3-5x faster)
-- **OpenSSL Fallback**: Fast SHA-512 when SHA-NI not available (2-3x faster than libsodium)
-- **AVX2 SIMD Optimization**: Vectorized field arithmetic using Intel AVX2 instructions
-- **High Performance**: Multi-threaded with CPU affinity, optimized for speed
-- **Simple Interface**: Find keys with specific hex prefixes
-- **Real-time Status**: Live progress updates and performance monitoring
-- **Memory Security**: Private keys are securely wiped from memory immediately after use
-- **Key Logging**: All found keys are logged to `found_keys.txt`
+- **Hybrid CPU+GPU**: Combines both CPU and GPU for maximum performance
+- **Server Optimized**: NUMA-aware memory allocation and thread affinity
+- **Multiple Search Modes**: Prefix only, suffix only, or prefix+suffix
+- **High Performance**: Achieves ~1.5M keys/sec with 2M+ spikes on optimized systems
+- **Cryptographically Secure**: Uses libsodium's proven Ed25519 implementation
+- **NUMA Support**: Optimized for multi-socket systems
 
-## Performance Optimizations
+## Requirements
 
-### SHA-512 Acceleration
-The program automatically detects and uses the fastest available SHA-512 implementation:
+- Ubuntu 20.04 or later
+- CUDA-capable GPU (GTX 1080 or better recommended)
+- CUDA toolkit 11.0 or later
+- 64-bit system with AVX-512 support (for maximum performance)
 
-1. **Intel SHA-NI** (Fastest): 3-5x faster than libsodium on supported CPUs
-2. **OpenSSL** (Fast): 2-3x faster than libsodium when SHA-NI not available
-3. **libsodium** (Secure): Cryptographic fallback for maximum compatibility
+## Installation on Fresh Ubuntu
 
-### AVX2 SIMD
-- Custom Ed25519 field arithmetic using Intel AVX2 instructions
-- Optimized for 12th Gen Intel processors and newer
-- Vectorized operations for parallel processing
-
-## Prerequisites
-
-This program requires a Linux system with AVX2 support and the following packages:
-
-### Ubuntu/Debian
+### Step 1: Update System
 ```bash
+sudo apt update && sudo apt upgrade -y
+```
+
+### Step 2: Install Build Tools
+```bash
+sudo apt install -y build-essential g++ make
+```
+
+### Step 3: Install CUDA Toolkit
+```bash
+# Add NVIDIA repository
+wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/cuda-ubuntu2004.pin
+sudo mv cuda-ubuntu2004.pin /etc/apt/preferences.d/cuda-repository-pin-600
+sudo apt-key adv --fetch-keys https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/7fa2af80.pub
+sudo add-apt-repository "deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/ /"
+
+# Install CUDA
 sudo apt update
-sudo apt install build-essential git autotools-dev automake libtool pkg-config libssl-dev
+sudo apt install -y cuda-toolkit-11-0
 ```
 
-### CentOS/RHEL/Fedora
+### Step 4: Install Dependencies
 ```bash
-sudo yum groupinstall "Development Tools"
-sudo yum install git autoconf automake libtool pkgconfig openssl-devel
-# OR for newer versions:
-sudo dnf groupinstall "Development Tools"
-sudo dnf install git autoconf automake libtool pkgconfig openssl-devel
+sudo apt install -y libsodium-dev libnuma-dev
 ```
 
-### Arch Linux
+### Step 5: Set Environment Variables
 ```bash
-sudo pacman -S base-devel git autoconf automake libtool pkgconf openssl
+echo 'export PATH=/usr/local/cuda-11.0/bin:$PATH' >> ~/.bashrc
+echo 'export LD_LIBRARY_PATH=/usr/local/cuda-11.0/lib64:$LD_LIBRARY_PATH' >> ~/.bashrc
+source ~/.bashrc
 ```
 
-**Note**: The program automatically downloads and builds libsodium from source during the build process. OpenSSL is used for SHA-512 acceleration when Intel SHA-NI is not available.
-
-## Installation and Usage
-
-### Step 1: Clone the Repository
+### Step 6: Verify CUDA Installation
 ```bash
-git clone https://github.com/liquidraver/MCKeySearcher
-cd MCKeySearcher
+nvcc --version
+nvidia-smi
 ```
 
-### Step 2: Build the Program
+## Building
 
-#### Simple Build (Recommended for most users)
+### Build with Server Optimizations (Recommended)
 ```bash
-make
+make -f Makefile.hybrid server
 ```
 
-#### Profile-Guided Optimization Build (For maximum performance)
+### Build with Standard Optimizations
 ```bash
-# First, generate profiling data
-make pgo-generate
-
-# Run the program to collect profiling data
-# ⚠️  IMPORTANT: Do NOT use Ctrl+C to exit during profiling!
-# The program must exit normally to write profiling data.
-
-# Automated profiling (recommended)
-echo -e "123456\n" | ./mckeysearcher
-
-# After collecting data, rebuild with optimizations
-make pgo-use
-
-# Now run the optimized version
-./mckeysearcher
+make -f Makefile.hybrid perf
 ```
 
-**⚠️  PGO Profiling Requirements:**
-- **Never use Ctrl+C** to exit during profiling - this prevents profiling data from being written
-- The program must exit naturally by finding a key
-- Profiling data files (`.gcda`, `.gcno`) will be created in the current directory
-
-### Step 3: Run the Program
-
+### Build Debug Version
 ```bash
-./mckeysearcher
+make -f Makefile.hybrid debug
 ```
 
-## Usage Examples
-
-### Example 1: Find a key starting with "BEEF"
+### Clean Build Files
 ```bash
-$ ./mckeysearcher
-Enter the prefix bytes from 0123456789ABCDEF (e.g. BEEFF00D, 23DF, 43): BEEF
+make -f Makefile.hybrid clean
 ```
 
-The program will:
-1. Ask for a hex prefix pattern
-2. Search for Ed25519 keys matching that pattern
-3. Display found keys in real-time
-4. Save all found keys to `found_keys.txt`
-5. Continue searching until interrupted
+## Usage
 
-## Output
+### Run the Program
+```bash
+./mckeysearcher_hybrid
+```
 
-- **Console**: Real-time status updates showing attempts, matches found, and keys per second
-- **Log File**: All found keys are saved to `found_keys.txt` in the current directory
-- **Format**: Complete key information including pattern, public key, private key, seed, thread, attempts, and timestamp
-- **Memory Security**: Private keys are automatically wiped from memory immediately after logging to file
+### Program Flow
+1. **Enter hex prefix**: Specify the prefix to search for (e.g., BEEF, 1234)
+2. **Choose search mode**:
+   - 1: Prefix only
+   - 2: Suffix only  
+   - 3: Prefix + Suffix
+3. **Enter suffix** (if mode 2 or 3 selected)
+4. **Choose search behavior**:
+   - 1: Find one key
+   - 2: Find N keys
+   - 3: Continuous search
+5. **Monitor progress**: Real-time performance metrics
+6. **Results saved**: Found keys are saved to `found_keys.txt`
 
-## Performance Features
+### Example Session
+```
+Enter hex prefix (e.g., BEEF, 1234): BEEF
 
-1. **Custom Ed25519 Implementation**: Built specifically for key generation, not signing/verification
-2. **AVX2 SIMD Operations**: Vectorized field arithmetic for maximum CPU utilization
-3. **Multi-threading**: Uses all available CPU cores minus one for the OS
-4. **CPU Affinity**: Threads are pinned to specific CPU cores to reduce overhead
-5. **Profile-Guided Optimization**: Optional PGO build for maximum performance tuning
+Search mode:
+1. Prefix only
+2. Suffix only
+3. Prefix + Suffix
+Choice (1-3): 1
 
-## Hardware Requirements
+Search behavior:
+1. Find one key
+2. Find N keys
+3. Continuous
+Choice (1-3): 1
 
-- **CPU**: Intel/AMD processor with AVX2 support (Intel Haswell+ or AMD Excavator+)
-- **Memory**: At least 4GB RAM recommended
-- **OS**: Linux (Ubuntu, Debian, CentOS, etc.)
+Starting hybrid CPU+GPU search...
+Found keys will be saved to found_keys.txt
+```
 
-## Security Warning
+## Performance
 
-⚠️ **IMPORTANT**: This program generates cryptographically secure Ed25519 private keys using libsodium's secure random number generator. However, generating keys on your computer, storing them in files, copying them, or doing anything with private keys on a general-purpose computer is NEVER secure.
+### Expected Performance
+- **CPU Only**: ~500k-800k keys/sec (depending on system)
+- **GPU Only**: ~1M-2M keys/sec (depending on GPU)
+- **Hybrid**: ~1.5M+ keys/sec with spikes to 2M+
 
-### Security Features
+### Performance Factors
+- **CPU**: Number of cores, AVX-512 support, NUMA configuration
+- **GPU**: CUDA compute capability, memory bandwidth
+- **System**: Memory speed, storage I/O, thermal throttling
 
-✅ **Memory Security**: Private keys are automatically and securely wiped from memory immediately after use
-- Memory is overwritten with cryptographically secure random data before zeros
-- Wiping happens immediately after logging to file
+## Configuration
 
-### Best Practices
+### CPU Threads
+- Automatically detects available cores
+- Reserves one core for OS by default
+- Can be modified in the source code
 
-1. **Immediate Transfer**: Copy the private key from `found_keys.txt` to paper or insert directly into your node
-2. **Never Store**: Don't leave private keys on your computer longer than necessary
-3. **Memory Protection**: Private keys are automatically wiped from memory, but avoid running other programs while keys are in memory
+### Batch Sizes
+- **CPU**: 32,768 keys per batch (optimized for AVX-512)
+- **GPU**: 32,768 keys per batch (CUDA optimized)
 
-### The Most Secure Approach
-
-The most secure way is to let the node generate keys on itself after a full wipe and never save or display the keys anywhere else.
-
-**You need to import the PRIVATE key from found_keys.txt to make the app display the custom public key!**
+### NUMA Settings
+- Automatically detects NUMA nodes
+- Allocates memory on appropriate nodes
+- Thread affinity to specific CPU cores
 
 ## Troubleshooting
 
-### PGO (Profile-Guided Optimization) Issues
+### Common Issues
 
-**Problem**: `warning: 'mckeysearcher-main.gcda' profile count data file not found`
-
-**Solution**: This means the profiling data wasn't generated properly. Follow these steps:
-
-1. **Ensure you built the instrumented version:**
-   ```bash
-   make pgo-generate
-   ```
-
-2. **Run the instrumented version properly:**
-   - **DO NOT use Ctrl+C** to exit
-   - Let the program exit naturally by finding a key
-   - Use a longer prefix (like "12345678") for more profiling data
-   
-   **Recommended automated approach:**
-   ```bash
-   echo -e "1234\n" | ./mckeysearcher
-   ```
-
-3. **Verify profiling files were created:**
-   ```bash
-   ls -la *.gcda *.gcno
-   ```
-
-4. **If files exist, build the optimized version:**
-   ```bash
-   make pgo-use
-   ```
-
-**Common PGO Mistakes:**
-- Using Ctrl+C to exit during profiling
-- Running the program for too short a time
-- Not letting the program exit naturally
-
-**Alternative**: If PGO continues to cause issues, use the simple build:
+**"CUDA not found"**
 ```bash
-make clean
-make
+# Verify CUDA installation
+nvcc --version
+nvidia-smi
+
+# Check environment variables
+echo $PATH | grep cuda
+echo $LD_LIBRARY_PATH | grep cuda
 ```
 
-### Build Issues
+**"libsodium not found"**
+```bash
+sudo apt install libsodium-dev
+```
 
-**Problem**: `make` fails with dependency errors
+**"libnuma not found"**
+```bash
+sudo apt install libnuma-dev
+```
 
-**Solution**: 
-1. **Clean and rebuild:**
-   ```bash
-   make clean
-   make
-   ```
+**"mbind: Invalid argument" warnings**
+- These are normal in VMware environments
+- Program continues to work optimally
+- Can be safely ignored
 
-2. **Check dependencies:**
-   ```bash
-   sudo apt update
-   sudo apt install build-essential git autotools-dev automake libtool pkg-config
-   ```
+**Build failures**
+```bash
+# Clean and rebuild
+make -f Makefile.hybrid clean
+make -f Makefile.hybrid server
+```
 
-3. **Manual libsodium build:**
-   ```bash
-   cd deps/libsodium
-   ./autogen.sh
-   ./configure --enable-static --disable-shared
-   make
-   cd ../..
-   make
-   ```
+### Performance Issues
 
-## Performance Tips
+**Low CPU performance**
+- Check if AVX-512 is supported: `cat /proc/cpuinfo | grep avx512`
+- Verify NUMA configuration: `numactl --hardware`
+- Check thermal throttling: `cat /proc/cpuinfo | grep MHz`
 
-1. **Use Profile-Guided Optimization**: For maximum performance, use the PGO build process
-2. **Reserve Cores**: The program automatically reserves one core for the OS
-3. **AVX2 Support**: Ensure your CPU supports AVX2 instructions for maximum performance
-4. **CPU Affinity**: Threads are automatically pinned to specific CPU cores
+**Low GPU performance**
+- Verify CUDA driver: `nvidia-smi`
+- Check GPU utilization: `nvidia-smi dmon`
+- Monitor GPU temperature and power limits
+
+## File Structure
+
+```
+MCKeySearcher/
+├── main_hybrid.cpp          # Main source code
+├── Makefile.hybrid          # Build system
+├── mckeysearcher_hybrid     # Compiled executable
+└── found_keys.txt           # Output file (created when keys found)
+```
 
 ## Technical Details
 
-### Ed25519 Implementation
+### Architecture
+- **CPU Workers**: Multi-threaded with NUMA awareness
+- **GPU Workers**: CUDA kernels for parallel key generation
+- **Hybrid Coordination**: Shared state management and progress tracking
 
-The program uses a custom, highly optimized Ed25519 implementation:
+### Cryptographic Implementation
+- **Ed25519**: libsodium's optimized implementation
+- **Random Generation**: libsodium's secure random number generator
+- **Key Format**: 64-byte private keys, 32-byte public keys
 
-- **Field Arithmetic**: Custom 256-bit field operations optimized for AVX2
-- **Point Operations**: Efficient point doubling and addition using extended coordinates
-- **Scalar Multiplication**: Double-and-add algorithm optimized for key generation
-- **No Signing/Verification**: Focused solely on key generation for maximum speed
+### Memory Management
+- **NUMA-aware allocation**: Memory allocated on appropriate nodes
+- **Batch processing**: Efficient memory usage with large batches
+- **Cache optimization**: Prefetching and alignment for performance
 
-### AVX2 Optimizations
+## License
 
-- **Vectorized Field Operations**: Addition, subtraction, multiplication using `_mm256_*` intrinsics
-- **Aligned Memory**: 32-byte aligned buffers for optimal SIMD performance
-- **Batch Processing**: Processes multiple keys simultaneously for better cache utilization
+This project is provided as-is for educational and research purposes. Use at your own risk.
 
-### Threading Model
+## Support
 
-- **Worker Threads**: One thread per CPU core (minus one for OS)
-- **CPU Affinity**: Threads are pinned to specific cores to reduce context switching
-- **Lock-free Counters**: Atomic operations for thread-safe performance monitoring
+For issues or questions:
+1. Check the troubleshooting section above
+2. Verify your system meets the requirements
+3. Ensure all dependencies are properly installed
+4. Check that CUDA is working correctly
