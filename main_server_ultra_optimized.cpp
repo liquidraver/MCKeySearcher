@@ -241,15 +241,14 @@ int get_numa_node(int cpu_id) {
 
 // Ultra-optimized CPU worker thread for sustained 2M+ performance
 void ultra_cpu_worker(const Config& config, int thread_id, int cpu_id) {
-    try {
-        // Set ultra-optimized thread affinity
-        set_ultra_thread_affinity(cpu_id);
-        
-        // Get NUMA node for this CPU
-        int numa_node = get_numa_node(cpu_id);
-        
-        // Allocate ultra-optimized buffers
-        UltraBuffer buffers(numa_node);
+    // Set ultra-optimized thread affinity
+    set_ultra_thread_affinity(cpu_id);
+    
+    // Get NUMA node for this CPU
+    int numa_node = get_numa_node(cpu_id);
+    
+    // Allocate ultra-optimized buffers
+    UltraBuffer buffers(numa_node);
     
     std::string pub_hex, priv_hex;
     pub_hex.reserve(64);
@@ -319,11 +318,6 @@ void ultra_cpu_worker(const Config& config, int thread_id, int cpu_id) {
             total_attempts.fetch_add(local_attempts);
             local_attempts = 0;
         }
-    }
-    } catch (const std::exception& e) {
-        std::cerr << "Worker " << thread_id << " error: " << e.what() << std::endl;
-    } catch (...) {
-        std::cerr << "Worker " << thread_id << " unknown error" << std::endl;
     }
 }
 
@@ -537,13 +531,8 @@ int main(int argc, char* argv[]) {
     
     // Start ultra-optimized CPU workers
     for (int i = 0; i < config.cpu_threads; ++i) {
-        try {
-            threads.emplace_back(ultra_cpu_worker, std::ref(config), i, i);
-            std::cout << "Started ULTRA worker " << i << " on core " << i << " (NUMA " << get_numa_node(i) << ")\n";
-        } catch (const std::exception& e) {
-            std::cerr << "Failed to start worker " << i << ": " << e.what() << std::endl;
-            break;
-        }
+        threads.emplace_back(ultra_cpu_worker, std::ref(config), i, i);
+        std::cout << "Started ULTRA worker " << i << " on core " << i << " (NUMA " << get_numa_node(i) << ")\n";
     }
     
     // Monitor progress with performance tracking
