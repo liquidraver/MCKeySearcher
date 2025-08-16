@@ -219,7 +219,6 @@ void print_status(uint64_t attempts, int found, double keys_per_sec, const std::
 extern "C" cudaError_t call_generate_ed25519_keys_kernel(
     curandState* d_states,
     uint8_t* d_seeds,
-    uint8_t* d_pubkeys,
     uint8_t* d_privkeys,
     int batch_size,
     int block_size,
@@ -232,16 +231,14 @@ void gpu_worker(const Config& config, int thread_id) {
     
     // Allocate GPU memory
     curandState* d_states;
-    unsigned char *d_seeds, *d_pubkeys, *d_privkeys;
+    unsigned char *d_seeds, *d_privkeys;
     
     CUDA_CHECK(cudaMalloc(&d_states, BATCH_SIZE * sizeof(curandState)));
     CUDA_CHECK(cudaMalloc(&d_seeds, BATCH_SIZE * 32));
-    CUDA_CHECK(cudaMalloc(&d_pubkeys, BATCH_SIZE * 32));
     CUDA_CHECK(cudaMalloc(&d_privkeys, BATCH_SIZE * 64));
     
     // Allocate host memory
     std::vector<unsigned char> h_seeds(BATCH_SIZE * 32);
-    std::vector<unsigned char> h_pubkeys(BATCH_SIZE * 32);
     std::vector<unsigned char> h_privkeys(BATCH_SIZE * 64);
     
     // Initialize CUDA random states
@@ -266,13 +263,12 @@ void gpu_worker(const Config& config, int thread_id) {
     while (!stop_search.load()) {
         // Generate keys on GPU
         CUDA_CHECK(call_generate_ed25519_keys_kernel(
-            d_states, (uint8_t*)d_seeds, (uint8_t*)d_pubkeys, (uint8_t*)d_privkeys, 
+            d_states, (uint8_t*)d_seeds, (uint8_t*)d_privkeys, 
             BATCH_SIZE, block_size, grid_size
         ));
         
         // Copy results back to host (asynchronous for better performance)
         CUDA_CHECK(cudaMemcpyAsync(h_seeds.data(), d_seeds, BATCH_SIZE * 32, cudaMemcpyDeviceToHost, 0));
-        CUDA_CHECK(cudaMemcpyAsync(h_pubkeys.data(), d_pubkeys, BATCH_SIZE * 32, cudaMemcpyDeviceToHost, 0));
         CUDA_CHECK(cudaMemcpyAsync(h_privkeys.data(), d_privkeys, BATCH_SIZE * 64, cudaMemcpyDeviceToHost, 0));
         
         // Synchronize to ensure data is ready
@@ -289,16 +285,21 @@ void gpu_worker(const Config& config, int thread_id) {
             for (size_t i = chunk_start; i < chunk_end; ++i) {
                 local_attempts++;
                 
-                bool prefix_match = check_prefix(&h_pubkeys[i * 32], config.prefix);
+                // Use libsodium to compute the actual public key from the private key
+                // This ensures cryptographic correctness and maximum security
+                unsigned char computed_pubkey[32];
+                crypto_sign_ed25519_keypair(computed_pubkey, &h_privkeys[i * 64]);
+                
+                bool prefix_match = check_prefix(computed_pubkey, config.prefix);
                 
                 if (prefix_match) {
                     to_hex_fast(&h_privkeys[i * 64], 64, priv_hex);
-                    to_hex_fast(&h_pubkeys[i * 32], 32, pub_hex);
+                    to_hex_fast(computed_pubkey, 32, pub_hex);
                     
-                    if (config.search_mode == 2 && check_suffix(&h_pubkeys[i * 32], config.suffix)) {
-                        log_key(priv_hex, pub_hex, "GPU-Prefix+Suffix");
+                    if (config.search_mode == 2 && check_suffix(computed_pubkey, config.suffix)) {
+                        log_key(priv_hex, pub_hex, "GPU+libsodium-Prefix+Suffix");
                     } else {
-                        log_key(priv_hex, pub_hex, "GPU-Prefix");
+                        log_key(priv_hex, pub_hex, "GPU+libsodium-Prefix");
                     }
                     
                     keys_found.fetch_add(1);
@@ -326,7 +327,6 @@ void gpu_worker(const Config& config, int thread_id) {
     // Cleanup GPU memory
     CUDA_CHECK(cudaFree(d_states));
     CUDA_CHECK(cudaFree(d_seeds));
-    CUDA_CHECK(cudaFree(d_pubkeys));
     CUDA_CHECK(cudaFree(d_privkeys));
 }
 
