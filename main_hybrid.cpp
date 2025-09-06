@@ -389,12 +389,12 @@ int main(int argc, char* argv[]) {
     }
     
     CPUFeatures cpu_features = detect_cpu_features();
-    std::cout << "🔍 MCKeySearcher - Ed25519 Key Searcher\n";
+    std::cout << "MCKeySearcher - Ed25519 Key Searcher\n";
     std::cout << "CPU Features:\n";
-    std::cout << "  AVX2: " << (cpu_features.avx2 ? "✅" : "❌") << "\n";
-    std::cout << "  AVX-512: " << (cpu_features.avx512f ? "✅" : "❌") << "\n";
-    std::cout << "  FMA: " << (cpu_features.fma ? "✅" : "❌") << "\n";
-    std::cout << "  BMI2: " << (cpu_features.bmi2 ? "✅" : "❌") << "\n\n";
+    std::cout << "  AVX2: " << (cpu_features.avx2 ? "Yes" : "No") << "\n";
+    std::cout << "  AVX-512: " << (cpu_features.avx512f ? "Yes" : "No") << "\n";
+    std::cout << "  FMA: " << (cpu_features.fma ? "Yes" : "No") << "\n";
+    std::cout << "  BMI2: " << (cpu_features.bmi2 ? "Yes" : "No") << "\n\n";
     
     bool cuda_available = false;
     cudaDeviceProp prop;
@@ -421,13 +421,13 @@ int main(int argc, char* argv[]) {
     }
     
     if (cuda_available) {
-        std::cout << "🔍 MCKeySearcher - Hybrid CPU+GPU Ed25519 Key Searcher\n";
-        std::cout << "🚀 Using GPU: " << prop.name << "\n";
+        std::cout << "MCKeySearcher - Hybrid CPU+GPU Ed25519 Key Searcher\n";
+        std::cout << "Using GPU: " << prop.name << "\n";
         std::cout << "   Compute Capability: " << prop.major << "." << prop.minor << "\n";
         std::cout << "   Memory: " << (prop.totalGlobalMem / (1024*1024*1024)) << " GB\n\n";
     } else {
-        std::cout << "🔍 MCKeySearcher - CPU-Only Ed25519 Key Searcher\n";
-        std::cout << "⚠️  CUDA not available, running in CPU-only mode\n\n";
+        std::cout << "MCKeySearcher - CPU-Only Ed25519 Key Searcher\n";
+        std::cout << "Warning: CUDA not available, running in CPU-only mode\n\n";
     }
     
     std::string prefix;
