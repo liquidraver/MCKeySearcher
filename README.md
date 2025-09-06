@@ -41,8 +41,7 @@ make
 ### Build Options
 
 ```bash
-make debug          # Debug build
-make pgo            # Profile-guided optimization
+make
 make clean          # Clean build files
 make install-deps   # Install dependencies
 ```
