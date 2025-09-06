@@ -131,8 +131,8 @@ make -f Makefile.hybrid check-cuda
 - Can be modified in the source code
 
 ### Batch Sizes
-- **CPU**: 32,768 keys per batch (optimized for AVX2)
-- **GPU**: 131,072 keys per batch (CUDA optimized)
+- **CPU**: 32,768 keys per batch
+- **GPU**: 131,072 keys per batch
 
 ### NUMA Settings
 - Automatically detects NUMA nodes
@@ -164,7 +164,3 @@ make -f Makefile.hybrid check-cuda
 - **NUMA-aware allocation**: Memory allocated on appropriate nodes
 - **Batch processing**: Efficient memory usage with large batches
 - **Cache optimization**: Prefetching and alignment for performance
-
-## License
-
-This project is provided as-is for educational and research purposes. Use at your own risk.
