@@ -1,13 +1,12 @@
 # MCKeySearcher - Hybrid CPU+GPU Ed25519 Key Searcher
 
-A high-performance Ed25519 key searcher that combines CPU and GPU acceleration for maximum performance. Optimized for server environments with NUMA support and AVX-512 optimizations.
+A high-performance Ed25519 key searcher that combines CPU and GPU acceleration for maximum performance. Optimized for server environments with NUMA support and AVX2 optimizations.
 
 ## Features
 
 - **Hybrid CPU+GPU**: GPU accelerates random generation, CPU computes Ed25519 keys
 - **Server Optimized**: NUMA-aware memory allocation and thread affinity
 - **Multiple Search Modes**: Prefix only, suffix only, or prefix+suffix
-- **High Performance**: Achieves ~1.5M keys/sec with 2M+ spikes on optimized systems
 - **Cryptographically Secure**: Uses libsodium's proven Ed25519 implementation
 - **NUMA Support**: Optimized for multi-socket systems
 
@@ -16,7 +15,7 @@ A high-performance Ed25519 key searcher that combines CPU and GPU acceleration f
 - Ubuntu 24.04/22.04 (recommended) or Windows 10/11 with WSL2
 - CUDA-capable GPU (GTX 1080 or better recommended)
 - CUDA toolkit 11.0 or later (12.5+ recommended)
-- 64-bit system with AVX-512 support (for maximum performance)
+- 64-bit system with AVX2 support (for maximum performance)
 
 ## Installation
 
@@ -120,7 +119,7 @@ make -f Makefile.hybrid check-cuda
 - **Hybrid CPU+GPU**: ~1.5M+ keys/sec with spikes to 2M+ (GPU generates random + CPU computes Ed25519)
 
 ### Performance Factors
-- **CPU**: Number of cores, AVX-512 support, NUMA configuration
+- **CPU**: Number of cores, AVX2 support, NUMA configuration
 - **GPU**: CUDA compute capability, memory bandwidth
 - **System**: Memory speed, storage I/O, thermal throttling
 
@@ -132,7 +131,7 @@ make -f Makefile.hybrid check-cuda
 - Can be modified in the source code
 
 ### Batch Sizes
-- **CPU**: 32,768 keys per batch (optimized for AVX-512)
+- **CPU**: 32,768 keys per batch (optimized for AVX2)
 - **GPU**: 131,072 keys per batch (CUDA optimized)
 
 ### NUMA Settings

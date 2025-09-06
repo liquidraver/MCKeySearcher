@@ -144,11 +144,6 @@ int get_numa_node(int cpu_id) {
 
 struct CPUFeatures {
     bool avx2 = false;
-    bool avx512f = false;
-    bool avx512dq = false;
-    bool avx512bw = false;
-    bool avx512vl = false;
-    bool avx512cd = false;
     bool fma = false;
     bool bmi2 = false;
 };
@@ -162,11 +157,6 @@ CPUFeatures detect_cpu_features() {
         features.avx2 = (ebx & (1 << 5)) != 0;
         features.fma = (ebx & (1 << 12)) != 0;
         features.bmi2 = (ebx & (1 << 8)) != 0;
-        features.avx512f = (ebx & (1 << 16)) != 0;
-        features.avx512dq = (ebx & (1 << 17)) != 0;
-        features.avx512bw = (ebx & (1 << 30)) != 0;
-        features.avx512vl = (ebx & (1 << 31)) != 0;
-        features.avx512cd = (ecx & (1 << 28)) != 0;
     }
     
     return features;
@@ -177,11 +167,6 @@ std::string get_compiler_flags(const CPUFeatures& features) {
     
     if (features.avx2) {
         flags += " -mavx2";
-    }
-    
-    if (features.avx512f && features.avx512dq && features.avx512bw && 
-        features.avx512vl && features.avx512cd) {
-        flags += " -mavx512f -mavx512dq -mavx512bw -mavx512vl -mavx512cd";
     }
     
     if (features.fma) {
@@ -392,7 +377,6 @@ int main(int argc, char* argv[]) {
     std::cout << "MCKeySearcher - Ed25519 Key Searcher\n";
     std::cout << "CPU Features:\n";
     std::cout << "  AVX2: " << (cpu_features.avx2 ? "Yes" : "No") << "\n";
-    std::cout << "  AVX-512: " << (cpu_features.avx512f ? "Yes" : "No") << "\n";
     std::cout << "  FMA: " << (cpu_features.fma ? "Yes" : "No") << "\n";
     std::cout << "  BMI2: " << (cpu_features.bmi2 ? "Yes" : "No") << "\n\n";
     
@@ -518,9 +502,7 @@ int main(int argc, char* argv[]) {
     std::cout << "Total CPU cores: " << total_cores << "\n";
     std::cout << "CPU threads to use: " << config.cpu_threads << " (1 core reserved for OS)\n";
     std::cout << "CPU Architecture: ";
-    if (cpu_features.avx512f) {
-        std::cout << "AVX-512 (Server-grade)";
-    } else if (cpu_features.avx2) {
+    if (cpu_features.avx2) {
         std::cout << "AVX2 (Modern Desktop)";
     } else {
         std::cout << "Basic x86-64";
