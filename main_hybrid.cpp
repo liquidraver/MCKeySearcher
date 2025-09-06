@@ -15,6 +15,8 @@
 #include <numa.h>
 #include <immintrin.h>
 #include <cpuid.h>
+#include <unistd.h>
+#include <fcntl.h>
 
 #define CUDA_CHECK(call) do { \
     cudaError_t err = call; \
@@ -56,9 +58,17 @@ struct NumaBuffer {
             pubkeys.resize(size * 32);
             privkeys.resize(size * 64);
             
+            int old_stderr = dup(STDERR_FILENO);
+            int dev_null = open("/dev/null", O_WRONLY);
+            dup2(dev_null, STDERR_FILENO);
+            
             numa_tonode_memory(seeds.data(), seeds.size(), node);
             numa_tonode_memory(pubkeys.data(), pubkeys.size(), node);
             numa_tonode_memory(privkeys.data(), privkeys.size(), node);
+            
+            dup2(old_stderr, STDERR_FILENO);
+            close(dev_null);
+            close(old_stderr);
         } else {
             seeds.resize(size * 32);
             pubkeys.resize(size * 32);
