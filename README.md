@@ -1,166 +1,108 @@
-# MCKeySearcher - Hybrid CPU+GPU Ed25519 Key Searcher
+# MCKeySearcher - CPU-Only Ed25519 Key Searcher
 
-A high-performance Ed25519 key searcher that combines CPU and GPU acceleration for maximum performance. Optimized for server environments with NUMA support and AVX2 optimizations.
+A high-performance Ed25519 key searcher optimized for CPU-only operation using libsodium's cryptographically secure implementations.
 
 ## Features
 
-- **Hybrid CPU+GPU**: GPU accelerates random generation, CPU computes Ed25519 keys
-- **Server Optimized**: NUMA-aware memory allocation and thread affinity
-- **Multiple Search Modes**: Prefix only, suffix only, or prefix+suffix
-- **Cryptographically Secure**: Uses libsodium's proven Ed25519 implementation
-- **NUMA Support**: Optimized for multi-socket systems
+- CPU-only implementation using libsodium's secure random number generation
+- NUMA-aware memory allocation and thread affinity
+- Multiple search modes: prefix only, suffix only, or prefix+suffix
+- SIMD-optimized prefix/suffix checking with AVX2 support
+- Real-time performance monitoring and entropy quality analysis
 
 ## Requirements
 
-- Ubuntu 24.04/22.04 (recommended) or Windows 10/11 with WSL2
-- CUDA-capable GPU (GTX 1080 or better recommended)
-- CUDA toolkit 11.0 or later (12.5+ recommended)
-- 64-bit system with AVX2 support (for maximum performance)
+- Ubuntu 24.04/22.04 or Windows 10/11 with WSL2
+- 64-bit system with AVX2 support
+- Modern CPU with multiple cores (8+ cores recommended)
 
 ## Installation
 
-### Ubuntu/Linux Installation
+### Ubuntu/Linux
 
-### Step 1: Update System
 ```bash
 sudo apt update && sudo apt upgrade -y
-```
-
-### Step 2: Install Build Tools
-```bash
 sudo apt install -y build-essential g++ make
-```
-
-### Step 3: Install CUDA Toolkit
-```bash
-# Method 1: Install via NVIDIA repository (recommended)
-wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
-sudo dpkg -i cuda-keyring_1.1-1_all.deb
-sudo apt update
-sudo apt install -y cuda-toolkit-12-5
-
-# Method 2: Alternative - Install via conda (if you prefer)
-# conda install -c nvidia cuda-toolkit
-```
-
-### Step 4: Install Dependencies
-```bash
 sudo apt install -y libsodium-dev libnuma-dev
 ```
 
-### Step 5: Set Environment Variables
-```bash
-echo 'export PATH=/usr/local/cuda-12.5/bin:$PATH' >> ~/.bashrc
-echo 'export LD_LIBRARY_PATH=/usr/local/cuda-12.5/lib64:$LD_LIBRARY_PATH' >> ~/.bashrc
-source ~/.bashrc
-```
+### Windows (WSL2)
 
-### Step 6: Verify CUDA Installation
-```bash
-nvcc --version
-nvidia-smi
-```
-
-### Windows Installation (WSL2)
-
-1. **Install WSL2** with Ubuntu
-2. **Install NVIDIA drivers** on Windows host
-3. **Follow Ubuntu installation steps** above within WSL2
-4. **Verify CUDA** works in WSL2 environment
+1. Install WSL2 with Ubuntu
+2. Follow Ubuntu installation steps above
+3. Verify installation: `pkg-config --cflags --libs libsodium`
 
 ## Building
 
-### Build Performance-Optimized Version (Default)
 ```bash
-make -f Makefile.hybrid
+make
 ```
 
-### Clean Build Files
-```bash
-make -f Makefile.hybrid clean
-```
+### Build Options
 
-### Install Dependencies
 ```bash
-make -f Makefile.hybrid install-deps
-```
-
-### Check CUDA Installation
-```bash
-make -f Makefile.hybrid check-cuda
+make debug          # Debug build
+make pgo            # Profile-guided optimization
+make clean          # Clean build files
+make install-deps   # Install dependencies
 ```
 
 ## Usage
 
-### Run the Program
 ```bash
-./mckeysearcher_hybrid
+./mckeysearcher
 ```
 
 ### Program Flow
-1. **Enter hex prefix**: Specify the prefix to search for (e.g., BEEF, 1234)
-2. **Choose search mode**:
+
+1. Enter hex prefix (e.g., BEEF, 1234)
+2. Choose search mode:
    - 1: Prefix only
-   - 2: Suffix only  
+   - 2: Suffix only
    - 3: Prefix + Suffix
-3. **Enter suffix** (if mode 2 or 3 selected)
-4. **Choose search behavior**:
+3. Enter suffix (if mode 2 or 3 selected)
+4. Choose search behavior:
    - 1: Find one key
    - 2: Find N keys
    - 3: Continuous search
-5. **Monitor progress**: Real-time performance metrics
-6. **Results saved**: Found keys are saved to `found_keys.txt`
-
+5. Monitor progress and results
+6. Found keys saved to `found_keys.txt`
 
 ## Performance
 
-### Expected Performance
-- **CPU Only**: ~500k-800k keys/sec (when CUDA unavailable)
-- **Hybrid CPU+GPU**: ~1.5M+ keys/sec with spikes to 2M+ (GPU generates random + CPU computes Ed25519)
-
-### Performance Factors
-- **CPU**: Number of cores, AVX2 support, NUMA configuration
-- **GPU**: CUDA compute capability, memory bandwidth
-- **System**: Memory speed, storage I/O, thermal throttling
+- Expected: 800k-1.2M keys/sec on modern CPUs
+- Optimized for AVX2, multiple cores, and large L3 cache
+- Batch size automatically adjusts based on system capabilities
 
 ## Configuration
 
 ### CPU Threads
 - Automatically detects available cores
 - Reserves one core for OS by default
-- Can be modified in the source code
 
 ### Batch Sizes
-- **CPU**: 32,768 keys per batch
-- **GPU**: 131,072 keys per batch
+- Adaptive based on L3 cache size
+- Range: 32,768 to 262,144 keys per batch
 
 ### NUMA Settings
 - Automatically detects NUMA nodes
 - Allocates memory on appropriate nodes
-- Thread affinity to specific CPU cores
+- Sets thread affinity to specific CPU cores
 
+## Architecture
 
-
-**Windows/WSL2 Issues**
-- Ensure NVIDIA drivers are installed on Windows host
-- Verify CUDA works in WSL2: `nvidia-smi` should show GPU
-- If CUDA not detected, restart WSL2: `wsl --shutdown` then restart
-
-
-
-
-### Architecture
-- **CPU Workers**: Multi-threaded with NUMA awareness, generates complete Ed25519 keys
-- **GPU Workers**: CUDA kernels for parallel random number generation only
-- **Hybrid Coordination**: GPU generates random material, CPU computes Ed25519 keys
+### CPU Workers
+- Multi-threaded with NUMA awareness
+- Generates complete Ed25519 keys using libsodium
+- Optimized batch processing with prefetching
+- SIMD-optimized prefix/suffix checking
 
 ### Cryptographic Implementation
-- **Ed25519**: libsodium's optimized implementation
-- **Random Generation**: GPU-accelerated cuRAND + libsodium fallback
-- **Key Format**: 64-byte private keys, 32-byte public keys
-- **Hybrid Approach**: GPU generates random material, CPU computes Ed25519 keys
+- Ed25519: libsodium's optimized implementation
+- Random Generation: libsodium's `randombytes_buf()`
+- Key Format: 64-byte private keys, 32-byte public keys
 
 ### Memory Management
-- **NUMA-aware allocation**: Memory allocated on appropriate nodes
-- **Batch processing**: Efficient memory usage with large batches
-- **Cache optimization**: Prefetching and alignment for performance
+- NUMA-aware allocation
+- Batch processing with large batches
+- Cache optimization with prefetching and alignment
