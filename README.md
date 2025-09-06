@@ -5,10 +5,10 @@ A high-performance Ed25519 key searcher optimized for CPU-only operation using l
 ## Features
 
 - CPU-only implementation using libsodium's secure random number generation
-- NUMA-aware memory allocation and thread affinity
+- Multi-threaded with thread affinity optimization
 - Multiple search modes: prefix only, suffix only, or prefix+suffix
 - SIMD-optimized prefix/suffix checking with AVX2 support
-- Real-time performance monitoring and entropy quality analysis
+- Real-time performance monitoring
 
 ## Requirements
 
@@ -68,41 +68,24 @@ make install-deps   # Install dependencies
 5. Monitor progress and results
 6. Found keys saved to `found_keys.txt`
 
-## Performance
-
-- Expected: 800k-1.2M keys/sec on modern CPUs
-- Optimized for AVX2, multiple cores, and large L3 cache
-- Batch size automatically adjusts based on system capabilities
-
 ## Configuration
 
 ### CPU Threads
 - Automatically detects available cores
 - Reserves one core for OS by default
 
-### Batch Sizes
-- Adaptive based on L3 cache size
-- Range: 32,768 to 262,144 keys per batch
-
-### NUMA Settings
-- Automatically detects NUMA nodes
-- Allocates memory on appropriate nodes
-- Sets thread affinity to specific CPU cores
+### Thread Affinity
+- Automatically sets thread affinity to specific CPU cores
+- Optimizes CPU cache utilization
 
 ## Architecture
 
 ### CPU Workers
-- Multi-threaded with NUMA awareness
-- Generates complete Ed25519 keys using libsodium
-- Optimized batch processing with prefetching
-- SIMD-optimized prefix/suffix checking
+- Multi-threaded implementation
+- Generates Ed25519 keys using libsodium
+- SIMD-optimized prefix/suffix checking with AVX2
 
 ### Cryptographic Implementation
 - Ed25519: libsodium's optimized implementation
 - Random Generation: libsodium's `randombytes_buf()`
 - Key Format: 64-byte private keys, 32-byte public keys
-
-### Memory Management
-- NUMA-aware allocation
-- Batch processing with large batches
-- Cache optimization with prefetching and alignment
