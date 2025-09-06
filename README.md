@@ -4,7 +4,7 @@ A high-performance Ed25519 key searcher that combines CPU and GPU acceleration f
 
 ## Features
 
-- **Hybrid CPU+GPU**: Combines both CPU and GPU for maximum performance
+- **Hybrid CPU+GPU**: GPU accelerates random generation, CPU computes Ed25519 keys
 - **Server Optimized**: NUMA-aware memory allocation and thread affinity
 - **Multiple Search Modes**: Prefix only, suffix only, or prefix+suffix
 - **High Performance**: Achieves ~1.5M keys/sec with 2M+ spikes on optimized systems
@@ -13,12 +13,14 @@ A high-performance Ed25519 key searcher that combines CPU and GPU acceleration f
 
 ## Requirements
 
-- Ubuntu 24.04 (recommended) or Ubuntu 22.04
+- Ubuntu 24.04/22.04 (recommended) or Windows 10/11 with WSL2
 - CUDA-capable GPU (GTX 1080 or better recommended)
-- CUDA toolkit 12.5 or later
+- CUDA toolkit 11.0 or later (12.5+ recommended)
 - 64-bit system with AVX-512 support (for maximum performance)
 
-## Installation on Fresh Ubuntu
+## Installation
+
+### Ubuntu/Linux Installation
 
 ### Step 1: Update System
 ```bash
@@ -32,15 +34,14 @@ sudo apt install -y build-essential g++ make
 
 ### Step 3: Install CUDA Toolkit
 ```bash
-# Add NVIDIA repository for Ubuntu 24.04
-wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-ubuntu2404.pin
-sudo mv cuda-ubuntu2404.pin /etc/apt/preferences.d/cuda-repository-pin-600
-sudo apt-key adv --fetch-keys https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/3bf863cc.pub
-sudo add-apt-repository "deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/ /"
-
-# Install CUDA
+# Method 1: Install via NVIDIA repository (recommended)
+wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+sudo dpkg -i cuda-keyring_1.1-1_all.deb
 sudo apt update
 sudo apt install -y cuda-toolkit-12-5
+
+# Method 2: Alternative - Install via conda (if you prefer)
+# conda install -c nvidia cuda-toolkit
 ```
 
 ### Step 4: Install Dependencies
@@ -61,26 +62,33 @@ nvcc --version
 nvidia-smi
 ```
 
+### Windows Installation (WSL2)
+
+1. **Install WSL2** with Ubuntu
+2. **Install NVIDIA drivers** on Windows host
+3. **Follow Ubuntu installation steps** above within WSL2
+4. **Verify CUDA** works in WSL2 environment
+
 ## Building
 
-### Build with Server Optimizations (Recommended)
+### Build Performance-Optimized Version (Default)
 ```bash
-make -f Makefile.hybrid server
-```
-
-### Build with Standard Optimizations
-```bash
-make -f Makefile.hybrid perf
-```
-
-### Build Debug Version
-```bash
-make -f Makefile.hybrid debug
+make -f Makefile.hybrid
 ```
 
 ### Clean Build Files
 ```bash
 make -f Makefile.hybrid clean
+```
+
+### Install Dependencies
+```bash
+make -f Makefile.hybrid install-deps
+```
+
+### Check CUDA Installation
+```bash
+make -f Makefile.hybrid check-cuda
 ```
 
 ## Usage
@@ -104,32 +112,12 @@ make -f Makefile.hybrid clean
 5. **Monitor progress**: Real-time performance metrics
 6. **Results saved**: Found keys are saved to `found_keys.txt`
 
-### Example Session
-```
-Enter hex prefix (e.g., BEEF, 1234): BEEF
-
-Search mode:
-1. Prefix only
-2. Suffix only
-3. Prefix + Suffix
-Choice (1-3): 1
-
-Search behavior:
-1. Find one key
-2. Find N keys
-3. Continuous
-Choice (1-3): 1
-
-Starting hybrid CPU+GPU search...
-Found keys will be saved to found_keys.txt
-```
 
 ## Performance
 
 ### Expected Performance
-- **CPU Only**: ~500k-800k keys/sec (depending on system)
-- **GPU Only**: ~1M-2M keys/sec (depending on GPU)
-- **Hybrid**: ~1.5M+ keys/sec with spikes to 2M+
+- **CPU Only**: ~500k-800k keys/sec (when CUDA unavailable)
+- **Hybrid CPU+GPU**: ~1.5M+ keys/sec with spikes to 2M+ (GPU generates random + CPU computes Ed25519)
 
 ### Performance Factors
 - **CPU**: Number of cores, AVX-512 support, NUMA configuration
@@ -145,83 +133,33 @@ Found keys will be saved to found_keys.txt
 
 ### Batch Sizes
 - **CPU**: 32,768 keys per batch (optimized for AVX-512)
-- **GPU**: 32,768 keys per batch (CUDA optimized)
+- **GPU**: 131,072 keys per batch (CUDA optimized)
 
 ### NUMA Settings
 - Automatically detects NUMA nodes
 - Allocates memory on appropriate nodes
 - Thread affinity to specific CPU cores
 
-## Troubleshooting
 
-### Common Issues
 
-**"CUDA not found"**
-```bash
-# Verify CUDA installation
-nvcc --version
-nvidia-smi
+**Windows/WSL2 Issues**
+- Ensure NVIDIA drivers are installed on Windows host
+- Verify CUDA works in WSL2: `nvidia-smi` should show GPU
+- If CUDA not detected, restart WSL2: `wsl --shutdown` then restart
 
-# Check environment variables
-echo $PATH | grep cuda
-echo $LD_LIBRARY_PATH | grep cuda
-```
 
-**"libsodium not found"**
-```bash
-sudo apt install libsodium-dev
-```
 
-**"libnuma not found"**
-```bash
-sudo apt install libnuma-dev
-```
-
-**"mbind: Invalid argument" warnings**
-- These are normal in VMware environments
-- Program continues to work optimally
-- Can be safely ignored
-
-**Build failures**
-```bash
-# Clean and rebuild
-make -f Makefile.hybrid clean
-make -f Makefile.hybrid server
-```
-
-### Performance Issues
-
-**Low CPU performance**
-- Check if AVX-512 is supported: `cat /proc/cpuinfo | grep avx512`
-- Verify NUMA configuration: `numactl --hardware`
-- Check thermal throttling: `cat /proc/cpuinfo | grep MHz`
-
-**Low GPU performance**
-- Verify CUDA driver: `nvidia-smi`
-- Check GPU utilization: `nvidia-smi dmon`
-- Monitor GPU temperature and power limits
-
-## File Structure
-
-```
-MCKeySearcher/
-├── main_hybrid.cpp          # Main source code
-├── Makefile.hybrid          # Build system
-├── mckeysearcher_hybrid     # Compiled executable
-└── found_keys.txt           # Output file (created when keys found)
-```
-
-## Technical Details
 
 ### Architecture
-- **CPU Workers**: Multi-threaded with NUMA awareness
-- **GPU Workers**: CUDA kernels for parallel key generation
-- **Hybrid Coordination**: Shared state management and progress tracking
+- **CPU Workers**: Multi-threaded with NUMA awareness, generates complete Ed25519 keys
+- **GPU Workers**: CUDA kernels for parallel random number generation only
+- **Hybrid Coordination**: GPU generates random material, CPU computes Ed25519 keys
 
 ### Cryptographic Implementation
 - **Ed25519**: libsodium's optimized implementation
-- **Random Generation**: libsodium's secure random number generator
+- **Random Generation**: GPU-accelerated cuRAND + libsodium fallback
 - **Key Format**: 64-byte private keys, 32-byte public keys
+- **Hybrid Approach**: GPU generates random material, CPU computes Ed25519 keys
 
 ### Memory Management
 - **NUMA-aware allocation**: Memory allocated on appropriate nodes
@@ -231,11 +169,3 @@ MCKeySearcher/
 ## License
 
 This project is provided as-is for educational and research purposes. Use at your own risk.
-
-## Support
-
-For issues or questions:
-1. Check the troubleshooting section above
-2. Verify your system meets the requirements
-3. Ensure all dependencies are properly installed
-4. Check that CUDA is working correctly
