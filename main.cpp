@@ -12,11 +12,22 @@
 #include <sstream>
 #include <algorithm>
 #include <pthread.h>
-#include <numa.h>
 #include <immintrin.h>
 #include <cpuid.h>
 #include <unistd.h>
 #include <fcntl.h>
+
+struct PrefixMatcher {
+    std::vector<unsigned char> bytes;
+    size_t full_bytes = 0;
+    bool has_half_byte = false;
+    unsigned char half_byte = 0; // already shifted into the high nibble
+};
+
+struct SuffixMatcher {
+    std::vector<unsigned char> bytes;
+    size_t byte_len = 0;
+};
 
 struct Config {
     std::string prefix;
@@ -25,6 +36,8 @@ struct Config {
     int target_keys = 1;
     bool continuous = false;
     int cpu_threads = 0;
+    PrefixMatcher prefix_matcher;
+    SuffixMatcher suffix_matcher;
 };
 
 std::atomic<uint64_t> total_attempts(0);
@@ -45,74 +58,45 @@ inline void to_hex_fast(const unsigned char* data, size_t len, std::string& out)
     }
 }
 
-inline bool check_prefix(const unsigned char* data, const std::string& prefix) {
-    size_t hex_len = prefix.length();
-    
-    // Handle odd-length prefixes by checking nibble by nibble
-    for (size_t i = 0; i < hex_len; i += 2) {
-        unsigned char high = (prefix[i] >= 'A') ? (prefix[i] - 'A' + 10) : (prefix[i] - '0');
-        unsigned char low = (i + 1 < hex_len) ? 
-            ((prefix[i + 1] >= 'A') ? (prefix[i + 1] - 'A' + 10) : (prefix[i + 1] - '0')) : 0;
-        
-        unsigned char expected = (high << 4) | low;
-        unsigned char mask = (i + 1 < hex_len) ? 0xFF : 0xF0; // Only check high nibble for odd-length
-        
-        if ((data[i / 2] & mask) != (expected & mask)) {
-            return false;
-        }
+static inline unsigned char hex_nibble(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    return 0;
+}
+
+static PrefixMatcher build_prefix_matcher(const std::string& prefix) {
+    PrefixMatcher m;
+    m.full_bytes = prefix.length() / 2;
+    m.bytes.resize(m.full_bytes);
+    for (size_t i = 0; i < m.full_bytes; ++i) {
+        m.bytes[i] = (hex_nibble(prefix[2 * i]) << 4) | hex_nibble(prefix[2 * i + 1]);
     }
-    
+    m.has_half_byte = (prefix.length() & 1) != 0;
+    if (m.has_half_byte) {
+        m.half_byte = hex_nibble(prefix[prefix.length() - 1]) << 4;
+    }
+    return m;
+}
+
+static SuffixMatcher build_suffix_matcher(const std::string& suffix) {
+    SuffixMatcher m;
+    m.byte_len = suffix.length() / 2;
+    m.bytes.resize(m.byte_len);
+    for (size_t i = 0; i < m.byte_len; ++i) {
+        m.bytes[i] = (hex_nibble(suffix[2 * i]) << 4) | hex_nibble(suffix[2 * i + 1]);
+    }
+    return m;
+}
+
+inline bool check_prefix_fast(const unsigned char* data, const PrefixMatcher& m) {
+    if (m.full_bytes && std::memcmp(data, m.bytes.data(), m.full_bytes) != 0) return false;
+    if (m.has_half_byte && (data[m.full_bytes] & 0xF0) != m.half_byte) return false;
     return true;
 }
 
-inline bool check_suffix(const unsigned char* data, const std::string& suffix) {
-    size_t suffix_len = suffix.length() / 2;
-    size_t start_byte = 32 - suffix_len;
-    
-    if (suffix_len > 0) {
-        unsigned char high = (suffix[2 * (suffix_len - 1)] >= 'A') ? (suffix[2 * (suffix_len - 1)] - 'A' + 10) : (suffix[2 * (suffix_len - 1)] - '0');
-        unsigned char low = (suffix[2 * (suffix_len - 1) + 1] >= 'A') ? (suffix[2 * (suffix_len - 1) + 1] - 'A' + 10) : (suffix[2 * (suffix_len - 1) + 1] - '0');
-        unsigned char expected = (high << 4) | low;
-        if (data[start_byte + suffix_len - 1] != expected) return false;
-    }
-    
-    if (suffix_len >= 4) {
-#ifdef __AVX2__
-        uint32_t expected_suffix = 0;
-        for (size_t i = 0; i < 4 && i < suffix_len; ++i) {
-            unsigned char high = (suffix[2 * i] >= 'A') ? (suffix[2 * i] - 'A' + 10) : (suffix[2 * i] - '0');
-            unsigned char low = (suffix[2 * i + 1] >= 'A') ? (suffix[2 * i + 1] - 'A' + 10) : (suffix[2 * i + 1] - '0');
-            expected_suffix |= ((high << 4) | low) << (i * 8);
-        }
-        
-        uint32_t data_suffix = *(uint32_t*)(data + start_byte);
-        uint32_t mask = (suffix_len >= 4) ? 0xFFFFFFFF : (0xFFFFFFFF >> (8 * (4 - suffix_len)));
-        if ((data_suffix & mask) != (expected_suffix & mask)) return false;
-        
-        for (size_t i = 4; i < suffix_len; ++i) {
-            unsigned char high = (suffix[2 * i] >= 'A') ? (suffix[2 * i] - 'A' + 10) : (suffix[2 * i] - '0');
-            unsigned char low = (suffix[2 * i + 1] >= 'A') ? (suffix[2 * i + 1] - 'A' + 10) : (suffix[2 * i + 1] - '0');
-            unsigned char expected = (high << 4) | low;
-            if (data[start_byte + i] != expected) return false;
-        }
-#else
-        for (size_t i = 0; i < suffix_len - 1; ++i) {
-            unsigned char high = (suffix[2 * i] >= 'A') ? (suffix[2 * i] - 'A' + 10) : (suffix[2 * i] - '0');
-            unsigned char low = (suffix[2 * i + 1] >= 'A') ? (suffix[2 * i + 1] - 'A' + 10) : (suffix[2 * i + 1] - '0');
-            unsigned char expected = (high << 4) | low;
-            if (data[start_byte + i] != expected) return false;
-        }
-#endif
-    } else {
-        for (size_t i = 0; i < suffix_len - 1; ++i) {
-            unsigned char high = (suffix[2 * i] >= 'A') ? (suffix[2 * i] - 'A' + 10) : (suffix[2 * i] - '0');
-            unsigned char low = (suffix[2 * i + 1] >= 'A') ? (suffix[2 * i + 1] - 'A' + 10) : (suffix[2 * i + 1] - '0');
-            unsigned char expected = (high << 4) | low;
-            if (data[start_byte + i] != expected) return false;
-        }
-    }
-    
-    return true;
+inline bool check_suffix_fast(const unsigned char* data, const SuffixMatcher& m) {
+    return std::memcmp(data + 32 - m.byte_len, m.bytes.data(), m.byte_len) == 0;
 }
 
 std::string format_duration(std::chrono::milliseconds ms) {
@@ -248,18 +232,18 @@ KeyValidation validate_keypair(const std::string& privateKeyHex, const std::stri
     }
 }
 
-void log_key(const std::string& priv_hex, const std::string& pub_hex, const std::string& label) {
+void log_key(const std::string& priv_hex, const std::string& pub_hex, const std::string& seed_hex, const std::string& label) {
     std::lock_guard<std::mutex> lock(file_mutex);
-    
+
     auto now = std::chrono::steady_clock::now();
     auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - program_start_time);
-    
+
     // Validate the keypair
     KeyValidation validation = validate_keypair(priv_hex, pub_hex);
-    
+
     std::ofstream out("found_keys.txt", std::ios::app);
     if (out.is_open()) {
-        out << label << ": " << priv_hex << " | " << pub_hex;
+        out << label << ": " << priv_hex << " | " << pub_hex << " | SEED: " << seed_hex;
         if (validation.valid) {
             out << " | RFC_8032_COMPLIANT";
         } else {
@@ -267,10 +251,11 @@ void log_key(const std::string& priv_hex, const std::string& pub_hex, const std:
         }
         out << std::endl;
     }
-    
+
     std::lock_guard<std::mutex> print_lock(print_mutex);
     std::cout << "\n*** KEY FOUND *** Time: " << format_duration(elapsed_ms) << " | " << label << " | " << pub_hex << std::endl;
-    
+    std::cout << "  Seed: " << seed_hex << std::endl;
+
     if (validation.valid) {
         std::cout << "✓ RFC 8032 Ed25519 compliant - Proper SHA-512 expansion, scalar clamping, and key consistency verified" << std::endl;
     } else {
@@ -299,19 +284,40 @@ struct CPUFeatures {
     bool avx2 = false;
     bool fma = false;
     bool bmi2 = false;
+    bool aes = false;
+    bool sha_ni = false;
+    bool avx512f = false;
+    bool avx512dq = false;
+    bool avx512bw = false;
+    bool avx512vl = false;
+    bool avx512cd = false;
+    bool avx512vnni = false;
 };
 
 CPUFeatures detect_cpu_features() {
     CPUFeatures features;
-    
+
     unsigned int eax, ebx, ecx, edx;
-    
-    if (__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx)) {
-        features.avx2 = (ebx & (1 << 5)) != 0;
-        features.fma = (ebx & (1 << 12)) != 0;
-        features.bmi2 = (ebx & (1 << 8)) != 0;
+
+    // Leaf 1: ECX bits 12 (FMA) and 25 (AES-NI)
+    if (__get_cpuid(1, &eax, &ebx, &ecx, &edx)) {
+        features.fma = (ecx & (1u << 12)) != 0;
+        features.aes = (ecx & (1u << 25)) != 0;
     }
-    
+
+    // Leaf 7 sub-leaf 0: EBX/ECX flags
+    if (__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx)) {
+        features.avx2       = (ebx & (1u <<  5)) != 0;
+        features.bmi2       = (ebx & (1u <<  8)) != 0;
+        features.avx512f    = (ebx & (1u << 16)) != 0;
+        features.avx512dq   = (ebx & (1u << 17)) != 0;
+        features.sha_ni     = (ebx & (1u << 29)) != 0;
+        features.avx512cd   = (ebx & (1u << 28)) != 0;
+        features.avx512bw   = (ebx & (1u << 30)) != 0;
+        features.avx512vl   = (ebx & (1u << 31)) != 0;
+        features.avx512vnni = (ecx & (1u << 11)) != 0;
+    }
+
     return features;
 }
 
@@ -326,77 +332,113 @@ void print_status(uint64_t attempts, int found, double keys_per_sec) {
 
 void cpu_worker(const Config& config, int thread_id, int cpu_id) {
     set_thread_affinity(cpu_id);
-    
+
+    // Per-thread 32-byte master from kernel CSPRNG (256 bits of secret entropy).
+    // Each iteration's 32-byte seed is SHA-512(master || counter)[0..32], which
+    // is a PRF keyed by an unknown 256-bit value — cryptographically equivalent
+    // to fresh kernel entropy per attempt, without per-iteration syscalls/mutex
+    // contention. The 32-byte seed is then SHA-512-expanded per RFC 8032 so the
+    // key can be regenerated by any standard Ed25519 implementation from the
+    // seed alone.
+    unsigned char master[32];
+    randombytes_buf(master, 32);
+
+    unsigned char prf_input[40];
+    std::memcpy(prf_input, master, 32);
+    uint64_t counter = (static_cast<uint64_t>(thread_id) << 56);
+
+    unsigned char seed[32];
+    unsigned char sha512_digest[64];
+    unsigned char pubkey[32];
+    unsigned char privkey[64];
+
     uint64_t local_attempts = 0;
-    const int UPDATE_INTERVAL = 1000;
-    
-    while (!stop_search.load()) {
-        unsigned char seed[32];
-        unsigned char pubkey[32], privkey[64];
-        unsigned char sha512_digest[64];
-        
-        // Generate cryptographically secure Ed25519 key pair
-        randombytes_buf(seed, 32);
-        
-        // Hash seed with SHA-512 to get the private scalar
+    const int UPDATE_INTERVAL = 4096;
+    const int STOP_CHECK_INTERVAL = 64;
+    int stop_check = 0;
+
+    while (true) {
+        if (++stop_check >= STOP_CHECK_INTERVAL) {
+            if (stop_search.load(std::memory_order_relaxed)) break;
+            stop_check = 0;
+        }
+
+        std::memcpy(prf_input + 32, &counter, 8);
+        counter++;
+
+        // Derive a 32-byte Ed25519 seed via PRF on (master || counter).
+        crypto_hash_sha512(sha512_digest, prf_input, 40);
+        std::memcpy(seed, sha512_digest, 32);
+
+        // Standard RFC 8032 Ed25519 expansion: SHA-512(seed) → 64-byte private key.
         crypto_hash_sha512(sha512_digest, seed, 32);
-        
-        // Clamp the first 32 bytes according to Ed25519 rules
-        sha512_digest[0] &= 248;   // Clear bottom 3 bits
-        sha512_digest[31] &= 63;   // Clear top 2 bits  
-        sha512_digest[31] |= 64;   // Set bit 6
-        
-        // Generate public key from clamped scalar
+
+        // Ed25519 scalar clamping
+        sha512_digest[0] &= 248;
+        sha512_digest[31] &= 63;
+        sha512_digest[31] |= 64;
+
         crypto_scalarmult_ed25519_base_noclamp(pubkey, sha512_digest);
-        
-        // Create MeshCore format private key: [clamped_scalar][sha512_second_half]
-        memcpy(privkey, sha512_digest, 32);                    // First 32 bytes: clamped scalar
-        memcpy(privkey + 32, sha512_digest + 32, 32);         // Second 32 bytes: SHA-512 second half
-        
+
         local_attempts++;
-        
+
         bool match = false;
-        std::string match_type;
-        
-        // Check for matches
+        const char* match_type = nullptr;
+
         if (config.search_mode == 1) {
-            match = check_prefix(pubkey, config.prefix);
-            if (match) match_type = "CPU-Prefix";
+            if (check_prefix_fast(pubkey, config.prefix_matcher)) {
+                match = true;
+                match_type = "CPU-Prefix";
+            }
         } else if (config.search_mode == 2) {
-            match = check_suffix(pubkey, config.suffix);
-            if (match) match_type = "CPU-Suffix";
-        } else if (config.search_mode == 3) {
-            if (check_prefix(pubkey, config.prefix)) {
-                match = check_suffix(pubkey, config.suffix);
-                if (match) match_type = "CPU-Prefix+Suffix";
+            if (check_suffix_fast(pubkey, config.suffix_matcher)) {
+                match = true;
+                match_type = "CPU-Suffix";
+            }
+        } else { // mode 3
+            if (check_prefix_fast(pubkey, config.prefix_matcher) &&
+                check_suffix_fast(pubkey, config.suffix_matcher)) {
+                match = true;
+                match_type = "CPU-Prefix+Suffix";
             }
         }
-        
+
         if (match) {
-            std::string priv_hex, pub_hex;
+            std::memcpy(privkey, sha512_digest, 32);
+            std::memcpy(privkey + 32, sha512_digest + 32, 32);
+
+            std::string seed_hex, priv_hex, pub_hex;
+            to_hex_fast(seed, 32, seed_hex);
             to_hex_fast(privkey, 64, priv_hex);
             to_hex_fast(pubkey, 32, pub_hex);
-            
-            log_key(priv_hex, pub_hex, match_type);
-            
+
+            log_key(priv_hex, pub_hex, seed_hex, match_type);
+
+            sodium_memzero(privkey, sizeof(privkey));
+
             keys_found.fetch_add(1);
-            
+
             if (!config.continuous && keys_found.load() >= config.target_keys) {
                 stop_search.store(true);
                 break;
             }
         }
-        
-        // Update counters periodically
+
         if (local_attempts % UPDATE_INTERVAL == 0) {
             total_attempts.fetch_add(local_attempts);
             local_attempts = 0;
         }
     }
-    
+
     if (local_attempts > 0) {
         total_attempts.fetch_add(local_attempts);
     }
+
+    sodium_memzero(master, sizeof(master));
+    sodium_memzero(prf_input, sizeof(prf_input));
+    sodium_memzero(seed, sizeof(seed));
+    sodium_memzero(sha512_digest, sizeof(sha512_digest));
+    sodium_memzero(privkey, sizeof(privkey));
 }
 
 int main(int argc, char* argv[]) {
@@ -406,11 +448,20 @@ int main(int argc, char* argv[]) {
     }
     
     CPUFeatures cpu_features = detect_cpu_features();
+    auto yn = [](bool b) { return b ? "Yes" : "No"; };
     std::cout << "MCKeySearcher - CPU-Only Ed25519 Key Searcher\n";
     std::cout << "CPU Features:\n";
-    std::cout << "  AVX2: " << (cpu_features.avx2 ? "Yes" : "No") << "\n";
-    std::cout << "  FMA: " << (cpu_features.fma ? "Yes" : "No") << "\n";
-    std::cout << "  BMI2: " << (cpu_features.bmi2 ? "Yes" : "No") << "\n\n";
+    std::cout << "  AVX2:        " << yn(cpu_features.avx2) << "\n";
+    std::cout << "  FMA:         " << yn(cpu_features.fma) << "\n";
+    std::cout << "  BMI2:        " << yn(cpu_features.bmi2) << "\n";
+    std::cout << "  AES-NI:      " << yn(cpu_features.aes) << "\n";
+    std::cout << "  SHA-NI:      " << yn(cpu_features.sha_ni) << "\n";
+    std::cout << "  AVX-512F:    " << yn(cpu_features.avx512f) << "\n";
+    std::cout << "  AVX-512DQ:   " << yn(cpu_features.avx512dq) << "\n";
+    std::cout << "  AVX-512BW:   " << yn(cpu_features.avx512bw) << "\n";
+    std::cout << "  AVX-512VL:   " << yn(cpu_features.avx512vl) << "\n";
+    std::cout << "  AVX-512CD:   " << yn(cpu_features.avx512cd) << "\n";
+    std::cout << "  AVX-512VNNI: " << yn(cpu_features.avx512vnni) << "\n\n";
     
     std::string prefix;
     std::cout << "Enter hex prefix (e.g., BEEF, 1234): ";
@@ -449,7 +500,7 @@ int main(int argc, char* argv[]) {
     if (config.search_mode == 2 || config.search_mode == 3) {
         std::cout << "\nEnter hex suffix (e.g., BEEF, 1234): ";
         std::cin >> config.suffix;
-        
+
         if (config.suffix.empty()) {
             std::cout << "No suffix specified, defaulting to prefix only." << std::endl;
             config.search_mode = 1;
@@ -461,7 +512,20 @@ int main(int argc, char* argv[]) {
                 }
                 if (c >= 'a' && c <= 'f') c = c - 'a' + 'A';
             }
+            if (config.suffix.length() % 2 != 0) {
+                std::cout << "Invalid hex suffix. Suffix must have an even number of hex characters (whole bytes)." << std::endl;
+                return 1;
+            }
+            if (config.suffix.length() / 2 > 32) {
+                std::cout << "Invalid hex suffix. Maximum 64 hex characters (32 bytes)." << std::endl;
+                return 1;
+            }
         }
+    }
+
+    config.prefix_matcher = build_prefix_matcher(config.prefix);
+    if (config.search_mode == 2 || config.search_mode == 3) {
+        config.suffix_matcher = build_suffix_matcher(config.suffix);
     }
     
     std::cout << "\nSearch behavior:\n";
@@ -494,13 +558,21 @@ int main(int argc, char* argv[]) {
     }
     
     unsigned int total_cores = std::thread::hardware_concurrency();
-    config.cpu_threads = (total_cores > 1) ? total_cores - 1 : 1;
-    
+    config.cpu_threads = (total_cores > 0) ? total_cores : 1;
+    if (const char* env_threads = std::getenv("MCKS_THREADS")) {
+        int requested = std::atoi(env_threads);
+        if (requested > 0) {
+            config.cpu_threads = requested;
+        }
+    }
+
     std::cout << "\nSystem Info:\n";
     std::cout << "Total CPU cores: " << total_cores << "\n";
-    std::cout << "CPU threads to use: " << config.cpu_threads << " (1 core reserved for OS)\n";
+    std::cout << "CPU threads to use: " << config.cpu_threads << " (all cores)\n";
     std::cout << "CPU Architecture: ";
-    if (cpu_features.avx2) {
+    if (cpu_features.avx512f && cpu_features.avx512dq && cpu_features.avx512bw && cpu_features.avx512vl) {
+        std::cout << "AVX-512 (Server-class)";
+    } else if (cpu_features.avx2) {
         std::cout << "AVX2 (Modern Desktop)";
     } else {
         std::cout << "Basic x86-64";

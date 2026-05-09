@@ -1,0 +1,14 @@
+# Build artifacts
+*.o
+mckeysearcher
+mckeysearcher_pgo
+
+# PGO instrumentation/data
+*.gcda
+*.gcno
+*.profraw
+pgo/
+pgo-data.tar.gz
+
+# Runtime output
+found_keys.txt
