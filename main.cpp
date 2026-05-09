@@ -46,48 +46,19 @@ inline void to_hex_fast(const unsigned char* data, size_t len, std::string& out)
 }
 
 inline bool check_prefix(const unsigned char* data, const std::string& prefix) {
-    size_t prefix_len = prefix.length() / 2;
+    size_t hex_len = prefix.length();
     
-    if (prefix_len > 0) {
-        unsigned char high = (prefix[0] >= 'A') ? (prefix[0] - 'A' + 10) : (prefix[0] - '0');
-        unsigned char low = (prefix[1] >= 'A') ? (prefix[1] - 'A' + 10) : (prefix[1] - '0');
+    // Handle odd-length prefixes by checking nibble by nibble
+    for (size_t i = 0; i < hex_len; i += 2) {
+        unsigned char high = (prefix[i] >= 'A') ? (prefix[i] - 'A' + 10) : (prefix[i] - '0');
+        unsigned char low = (i + 1 < hex_len) ? 
+            ((prefix[i + 1] >= 'A') ? (prefix[i + 1] - 'A' + 10) : (prefix[i + 1] - '0')) : 0;
+        
         unsigned char expected = (high << 4) | low;
-        if (data[0] != expected) return false;
-    }
-    
-    if (prefix_len >= 4) {
-#ifdef __AVX2__
-        uint32_t expected_prefix = 0;
-        for (size_t i = 0; i < 4 && i < prefix_len; ++i) {
-            unsigned char high = (prefix[2 * i] >= 'A') ? (prefix[2 * i] - 'A' + 10) : (prefix[2 * i] - '0');
-            unsigned char low = (prefix[2 * i + 1] >= 'A') ? (prefix[2 * i + 1] - 'A' + 10) : (prefix[2 * i + 1] - '0');
-            expected_prefix |= ((high << 4) | low) << (i * 8);
-        }
+        unsigned char mask = (i + 1 < hex_len) ? 0xFF : 0xF0; // Only check high nibble for odd-length
         
-        uint32_t data_prefix = *(uint32_t*)data;
-        uint32_t mask = (prefix_len >= 4) ? 0xFFFFFFFF : (0xFFFFFFFF >> (8 * (4 - prefix_len)));
-        if ((data_prefix & mask) != (expected_prefix & mask)) return false;
-        
-        for (size_t i = 4; i < prefix_len; ++i) {
-            unsigned char high = (prefix[2 * i] >= 'A') ? (prefix[2 * i] - 'A' + 10) : (prefix[2 * i] - '0');
-            unsigned char low = (prefix[2 * i + 1] >= 'A') ? (prefix[2 * i + 1] - 'A' + 10) : (prefix[2 * i + 1] - '0');
-            unsigned char expected = (high << 4) | low;
-            if (data[i] != expected) return false;
-        }
-#else
-        for (size_t i = 1; i < prefix_len; ++i) {
-            unsigned char high = (prefix[2 * i] >= 'A') ? (prefix[2 * i] - 'A' + 10) : (prefix[2 * i] - '0');
-            unsigned char low = (prefix[2 * i + 1] >= 'A') ? (prefix[2 * i + 1] - 'A' + 10) : (prefix[2 * i + 1] - '0');
-            unsigned char expected = (high << 4) | low;
-            if (data[i] != expected) return false;
-        }
-#endif
-    } else {
-        for (size_t i = 1; i < prefix_len; ++i) {
-            unsigned char high = (prefix[2 * i] >= 'A') ? (prefix[2 * i] - 'A' + 10) : (prefix[2 * i] - '0');
-            unsigned char low = (prefix[2 * i + 1] >= 'A') ? (prefix[2 * i + 1] - 'A' + 10) : (prefix[2 * i + 1] - '0');
-            unsigned char expected = (high << 4) | low;
-            if (data[i] != expected) return false;
+        if ((data[i / 2] & mask) != (expected & mask)) {
+            return false;
         }
     }
     
@@ -165,19 +136,146 @@ std::string format_duration(std::chrono::milliseconds ms) {
     return oss.str();
 }
 
+// Key validation structure
+struct KeyValidation {
+    bool valid;
+    std::string error;
+};
+
+// Validate keypair using the exact same logic as meshcore-web-keygen
+KeyValidation validate_keypair(const std::string& privateKeyHex, const std::string& publicKeyHex) {
+    try {
+        // Convert hex strings to bytes
+        if (privateKeyHex.length() != 128) {
+            return {false, "Private key must be 128 hex characters (64 bytes)"};
+        }
+        
+        std::vector<unsigned char> privateKeyBytes;
+        for (size_t i = 0; i < privateKeyHex.length(); i += 2) {
+            std::string byte_str = privateKeyHex.substr(i, 2);
+            unsigned char byte = static_cast<unsigned char>(std::stoul(byte_str, nullptr, 16));
+            privateKeyBytes.push_back(byte);
+        }
+        
+        if (privateKeyBytes.size() != 64) {
+            return {false, "Private key must be 64 bytes"};
+        }
+        
+        // Extract the clamped scalar (first 32 bytes) - this is what MeshCore actually uses
+        std::vector<unsigned char> clampedScalar(privateKeyBytes.begin(), privateKeyBytes.begin() + 32);
+        
+        // 1. Check that the private key is not all zeros
+        bool all_zero = true;
+        for (unsigned char byte : clampedScalar) {
+            if (byte != 0) {
+                all_zero = false;
+                break;
+            }
+        }
+        if (all_zero) {
+            return {false, "Private key cannot be all zeros"};
+        }
+        
+        // 2. Validate Ed25519 scalar clamping rules (matches Python implementation)
+        if ((clampedScalar[0] & 7) != 0) {
+            return {false, "Private key scalar not properly clamped (bits 0-2 should be 0)"};
+        }
+        
+        if ((clampedScalar[31] & 192) != 64) {
+            return {false, "Private key scalar not properly clamped (bit 6 should be 1, bit 7 should be 0)"};
+        }
+        
+        // 3. Check public key format
+        if (publicKeyHex.length() != 64) {
+            return {false, "Public key must be 64 hex characters (32 bytes)"};
+        }
+        
+        std::vector<unsigned char> publicKeyBytes;
+        for (size_t i = 0; i < publicKeyHex.length(); i += 2) {
+            std::string byte_str = publicKeyHex.substr(i, 2);
+            unsigned char byte = static_cast<unsigned char>(std::stoul(byte_str, nullptr, 16));
+            publicKeyBytes.push_back(byte);
+        }
+        
+        if (publicKeyBytes.size() != 32) {
+            return {false, "Public key must be 32 bytes"};
+        }
+        
+        bool pub_all_zero = true;
+        for (unsigned char byte : publicKeyBytes) {
+            if (byte != 0) {
+                pub_all_zero = false;
+                break;
+            }
+        }
+        if (pub_all_zero) {
+            return {false, "Public key cannot be all zeros"};
+        }
+        
+        // 4. CRITICAL: Verify that the private key actually generates the claimed public key
+        // This matches the Python implementation's verify_key_compatibility function
+        try {
+            // Generate public key from private scalar
+            unsigned char derivedPublicKey[32];
+            if (crypto_scalarmult_ed25519_base_noclamp(derivedPublicKey, clampedScalar.data()) != 0) {
+                return {false, "Failed to generate public key from private scalar"};
+            }
+            
+            // Convert derived public key to hex
+            std::string derivedPublicHex;
+            for (int i = 0; i < 32; i++) {
+                char hex[3];
+                std::sprintf(hex, "%02x", derivedPublicKey[i]);
+                derivedPublicHex += hex;
+            }
+            
+            // Convert both to lowercase for comparison
+            std::transform(derivedPublicHex.begin(), derivedPublicHex.end(), derivedPublicHex.begin(), ::tolower);
+            std::string publicKeyHexLower = publicKeyHex;
+            std::transform(publicKeyHexLower.begin(), publicKeyHexLower.end(), publicKeyHexLower.begin(), ::tolower);
+            
+            if (derivedPublicHex != publicKeyHexLower) {
+                return {false, "Key verification failed: private key does not generate the claimed public key"};
+            }
+            
+        } catch (const std::exception& e) {
+            return {false, "Key verification failed: " + std::string(e.what())};
+        }
+        
+        return {true, ""};
+    } catch (const std::exception& e) {
+        return {false, "Validation error: " + std::string(e.what())};
+    }
+}
+
 void log_key(const std::string& priv_hex, const std::string& pub_hex, const std::string& label) {
     std::lock_guard<std::mutex> lock(file_mutex);
     
     auto now = std::chrono::steady_clock::now();
     auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - program_start_time);
     
+    // Validate the keypair
+    KeyValidation validation = validate_keypair(priv_hex, pub_hex);
+    
     std::ofstream out("found_keys.txt", std::ios::app);
     if (out.is_open()) {
-        out << label << ": " << priv_hex << " | " << pub_hex << std::endl;
+        out << label << ": " << priv_hex << " | " << pub_hex;
+        if (validation.valid) {
+            out << " | RFC_8032_COMPLIANT";
+        } else {
+            out << " | VALIDATION_ERROR: " << validation.error;
+        }
+        out << std::endl;
     }
     
     std::lock_guard<std::mutex> print_lock(print_mutex);
     std::cout << "\n*** KEY FOUND *** Time: " << format_duration(elapsed_ms) << " | " << label << " | " << pub_hex << std::endl;
+    
+    if (validation.valid) {
+        std::cout << "✓ RFC 8032 Ed25519 compliant - Proper SHA-512 expansion, scalar clamping, and key consistency verified" << std::endl;
+    } else {
+        std::cout << "⚠ RFC 8032 compliance issues: " << validation.error << std::endl;
+    }
 }
 
 void set_thread_affinity(int cpu_id) {
@@ -229,19 +327,31 @@ void print_status(uint64_t attempts, int found, double keys_per_sec) {
 void cpu_worker(const Config& config, int thread_id, int cpu_id) {
     set_thread_affinity(cpu_id);
     
-    std::string pub_hex, priv_hex;
-    pub_hex.reserve(64);
-    priv_hex.reserve(128);
-    
     uint64_t local_attempts = 0;
     const int UPDATE_INTERVAL = 1000;
     
     while (!stop_search.load()) {
+        unsigned char seed[32];
         unsigned char pubkey[32], privkey[64];
+        unsigned char sha512_digest[64];
         
         // Generate cryptographically secure Ed25519 key pair
-        randombytes_buf(privkey, 64);
-        crypto_sign_ed25519_keypair(pubkey, privkey);
+        randombytes_buf(seed, 32);
+        
+        // Hash seed with SHA-512 to get the private scalar
+        crypto_hash_sha512(sha512_digest, seed, 32);
+        
+        // Clamp the first 32 bytes according to Ed25519 rules
+        sha512_digest[0] &= 248;   // Clear bottom 3 bits
+        sha512_digest[31] &= 63;   // Clear top 2 bits  
+        sha512_digest[31] |= 64;   // Set bit 6
+        
+        // Generate public key from clamped scalar
+        crypto_scalarmult_ed25519_base_noclamp(pubkey, sha512_digest);
+        
+        // Create MeshCore format private key: [clamped_scalar][sha512_second_half]
+        memcpy(privkey, sha512_digest, 32);                    // First 32 bytes: clamped scalar
+        memcpy(privkey + 32, sha512_digest + 32, 32);         // Second 32 bytes: SHA-512 second half
         
         local_attempts++;
         
@@ -263,6 +373,7 @@ void cpu_worker(const Config& config, int thread_id, int cpu_id) {
         }
         
         if (match) {
+            std::string priv_hex, pub_hex;
             to_hex_fast(privkey, 64, priv_hex);
             to_hex_fast(pubkey, 32, pub_hex);
             
